@@ -587,10 +587,6 @@ d493509e9bd943f52ecb658bce751a5665491843:
   mainline: dd589b0f1445e1ea1085b98edca6e4d5dedb98d0
   upstream: 93fd249f197eeca81bb1c744ac8aec2804afd219
 c87ca927b9e3d847d7c44ecf9f07528f1ef033e4:
-  title: 'of/irq: Support #msi-cells=<0> in of_msi_get_domain'
-  mainline: db8e81132cf051843c9a59b46fa5a071c45baeb3
-  upstream: 030de6c36c48a40f42d7d59732ee69990340e0a1
-d3355be0380a6ec95a835e359a68d4f42af056b8:
   title: 'jbd2: stop waiting for space when jbd2_cleanup_journal_tail() returns error'
   mainline: f5cacdc6f2bb2a9bf214469dd7112b43dd2dd68a
   upstream: 801a35dfef6996f3d5eaa96a59caf00440d9165e
