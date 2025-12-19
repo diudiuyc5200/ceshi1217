@@ -346,7 +346,6 @@
 
 &pm8150b_charger {
 	qcom,sec-charger-config = <3>;
-	qcom,auto-recharge-soc = <98>;
 	io-channels = <&pm8150b_vadc ADC_MID_CHG_DIV6>,
 		      <&pm8150b_vadc ADC_USB_IN_I>,
 		      <&pm8150b_vadc ADC_SBUx>,
@@ -395,4 +394,12 @@
 	io-channels = <&pm8150b_vadc ADC_AMUX_THM2>;
 	io-channel-names = "charger_temp";
 	status = "ok";
+};
+
+&reserved_memory {
+		ramdump_fb_mem: ramdump_fb_region@af000000 {
+			compatible = "removed-dma-pool";
+			no-map;
+			reg = <0 0xaf000000 0 0x1000000>;
+		};
 };
