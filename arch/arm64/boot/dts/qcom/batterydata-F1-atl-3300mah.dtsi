@@ -46,6 +46,13 @@ qcom,scud {
 	qcom,rslow-low-coeffs = <0xc6 0x15 0x65 0x02>;
 	qcom,checksum = <0xBE6A>;
 	qcom,gui-version = "PM855GUI - 1.0.0.10";
+	qcom,hold-soc-while-full;
+	/* scale MSOC with delta SOC after 100% */
+	qcom,linearize-soc;
+	/* scale SSOC with chg term current >= 90% to avoid jumps */
+	qcom,tcss-enable;
+	/* scale SSOC with BSOC to mitigate jumps */
+	qcom,bass-enable;
 	qcom,fg-profile-data = [
 		A9 1F 09 EA
 		30 D4 F1 DA

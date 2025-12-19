@@ -46,6 +46,13 @@ qcom,coslight {
 	qcom,rslow-low-coeffs = <0x21 0x15 0x15 0x06>;
 	qcom,checksum = <0xC822>;
 	qcom,gui-version = "PM855GUI - 1.0.0.10";
+	qcom,hold-soc-while-full;
+	/* scale MSOC with delta SOC after 100% */
+	qcom,linearize-soc;
+	/* scale SSOC with chg term current >= 90% to avoid jumps */
+	qcom,tcss-enable;
+	/* scale SSOC with BSOC to mitigate jumps */
+	qcom,bass-enable;
 	qcom,fg-profile-data = [
 		A9 1F 6C EA
 		8F E5 33 EA
