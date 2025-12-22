@@ -141,6 +141,8 @@ obj-$(CONFIG_ZSTD_DECOMPRESS) += zstd/
 obj-$(CONFIG_ZSTD_COMMON) += zstd/
 obj-$(CONFIG_XZ_DEC) += xz/
 obj-$(CONFIG_RAID6_PQ) += raid6/
+obj-$(CONFIG_LZ4KD_COMPRESS) += lz4kd/
+obj-$(CONFIG_LZ4KD_DECOMPRESS) += lz4kd/
 
 lib-$(CONFIG_DECOMPRESS_GZIP) += decompress_inflate.o
 lib-$(CONFIG_DECOMPRESS_BZIP2) += decompress_bunzip2.o
