@@ -414,6 +414,7 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 
 #define NL_RATIO 75
 #define DEFAULT_HISPEED_LOAD 85
+#define DEFAULT_HISPEED_FREQ 1708800
 #define DEFAULT_CPU0_RTG_BOOST_FREQ 1612800
 #define DEFAULT_CPU4_RTG_BOOST_FREQ 2131200
 #define DEFAULT_CPU7_RTG_BOOST_FREQ 2131200
@@ -1100,7 +1101,7 @@ static int sugov_init(struct cpufreq_policy *policy)
 	tunables->down_rate_limit_us =
 				cpufreq_policy_transition_delay_us(policy);
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
-	tunables->hispeed_freq = 1708800;
+	tunables->hispeed_freq = DEFAULT_HISPEED_FREQ;
 
 	switch (policy->cpu) {
 	default:
