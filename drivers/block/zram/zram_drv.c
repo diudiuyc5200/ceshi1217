@@ -1880,7 +1880,7 @@ out:
 #ifdef CONFIG_MIUI_ZRAM_MEMORY_TRACKING
 	average_size(zram, atomic64_read(&zram->stats.pages_stored));
 #endif
-	zram_set_entry(zram, index, NULL);
+	zram_set_entry(zram, index, 0);
 	zram_set_obj_size(zram, index, 0);
 	WARN_ON_ONCE(zram->table[index].flags &
 		~(1UL << ZRAM_LOCK | 1UL << ZRAM_UNDER_WB));
