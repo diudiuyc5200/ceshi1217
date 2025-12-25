@@ -21,12 +21,15 @@
 #include <linux/path.h>
 #include <linux/printk.h>
 #include <linux/sched.h>
+#include <linux/security.h>
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/uidgid.h>
 #include <linux/version.h>
+#include <linux/binfmts.h>
+#include <linux/tty.h>
 
 #include "allowlist.h"
 #include "setuid_hook.h"
@@ -38,6 +41,7 @@
 #include "supercalls.h"
 #include "syscall_hook_manager.h"
 #include "kernel_umount.h"
+#include "app_profile.h"
 
 static bool ksu_enhanced_security_enabled = false;
 
@@ -73,10 +77,9 @@ static inline bool is_allow_su()
 
 int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 {
-    // we rely on the fact that zygote always call setresuid(3) with same uids
     uid_t new_uid = ruid;
-    uid_t old_uid = current_uid().val;
-
+	uid_t old_uid = current_uid().val;
+    
     pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
 
     // if old process is root, ignore it.
@@ -105,9 +108,10 @@ int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
 
     // if on private space, see if its possibly the manager
     if (new_uid > PER_USER_RANGE && new_uid % PER_USER_RANGE == ksu_get_manager_uid()) {
-        ksu_set_manager_uid(new_uid);
+         ksu_set_manager_uid(new_uid);
     }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
     if (ksu_get_manager_uid() == new_uid) {
         pr_info("install fd for manager: %d\n", new_uid);
         ksu_install_fd();
@@ -129,6 +133,21 @@ int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)
     } else {
         ksu_clear_task_tracepoint_flag_if_needed(current);
     }
+#else
+    if (ksu_is_allow_uid_for_current(new_uid)) {
+		spin_lock_irq(&current->sighand->siglock);
+		disable_seccomp();
+		spin_unlock_irq(&current->sighand->siglock);
+
+		if (ksu_get_manager_uid() == new_uid) {
+			pr_info("install fd for ksu manager(uid=%d)\n",
+				new_uid);
+			ksu_install_fd();
+		}
+
+		return 0;
+	}
+#endif
 
     // Handle kernel umount
     ksu_handle_umount(old_uid, new_uid);
