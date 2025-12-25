@@ -11,9 +11,6 @@
 
 #define SELINUX_POLICY_INSTEAD_SELINUX_SS
 
-#define KERNEL_SU_DOMAIN "su"
-#define KERNEL_SU_FILE "ksu_file"
-#define KERNEL_EXEC_TYPE "ksu_exec"
 #define ALL NULL
 
 static struct policydb *get_policydb(void)
@@ -59,33 +56,8 @@ void apply_kernelsu_rules()
         ksu_allowxperm(db, KERNEL_SU_DOMAIN, ALL, "file", ALL);
     }
 
-    // we need to save allowlist in /data/adb/ksu
-    ksu_allow(db, "kernel", "adb_data_file", "dir", ALL);
-    ksu_allow(db, "kernel", "adb_data_file", "file", ALL);
-    // we need to search /data/app
-    ksu_allow(db, "kernel", "apk_data_file", "file", "open");
-    ksu_allow(db, "kernel", "apk_data_file", "dir", "open");
-    ksu_allow(db, "kernel", "apk_data_file", "dir", "read");
-    ksu_allow(db, "kernel", "apk_data_file", "dir", "search");
-    // we may need to do mount on shell
-    ksu_allow(db, "kernel", "shell_data_file", "file", ALL);
-    // we need to read /data/system/packages.list
-    ksu_allow(db, "kernel", "kernel", "capability", "dac_override");
-    // Android 10+:
-    // http://aospxref.com/android-12.0.0_r3/xref/system/sepolicy/private/file_contexts#512
-    ksu_allow(db, "kernel", "packages_list_file", "file", ALL);
-    // Kernel 4.4
-    ksu_allow(db, "kernel", "packages_list_file", "dir", ALL);
-    // Android 9-:
-    // http://aospxref.com/android-9.0.0_r61/xref/system/sepolicy/private/file_contexts#360
-    ksu_allow(db, "kernel", "system_data_file", "file", ALL);
-    ksu_allow(db, "kernel", "system_data_file", "dir", ALL);
     // our ksud triggered by init
-    ksu_allow(db, "init", "adb_data_file", "file", ALL);
-    ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
     ksu_allow(db, "init", KERNEL_SU_DOMAIN, ALL, ALL);
-    // we need to umount modules in zygote
-    ksu_allow(db, "zygote", "adb_data_file", "dir", "search");
 
     // copied from Magisk rules
     // suRights
@@ -116,16 +88,15 @@ void apply_kernelsu_rules()
     ksu_allow(db, "hwservicemanager", KERNEL_SU_DOMAIN, "process",
           "getattr");
 
-    // For mounting loop devices, mirrors, tmpfs
-    ksu_allow(db, "kernel", ALL, "file", "read");
-    ksu_allow(db, "kernel", ALL, "file", "write");
-
     // Allow all binder transactions
     ksu_allow(db, ALL, KERNEL_SU_DOMAIN, "binder", ALL);
 
     // Allow system server kill su process
     ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "getpgid");
     ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "sigkill");
+
+    // https://android-review.googlesource.com/c/platform/system/logging/+/3725346
+    ksu_dontaudit(db, "untrusted_app", KERNEL_SU_DOMAIN, "dir", "getattr");
 
     mutex_unlock(&ksu_rules);
 }
