@@ -11,30 +11,6 @@
 #include "ksu.h"
 #include "throne_tracker.h"
 
-#ifdef CONFIG_KSU_CMDLINE
-#include <linux/init.h>
-
-// use get_ksu_state()!
-unsigned int enable_kernelsu = 1; // enabled by default
-static int __init read_kernelsu_state(char *s)
-{
-	if (s)
-		enable_kernelsu = simple_strtoul(s, NULL, 0);
-	return 1;
-}
-__setup("kernelsu.enabled=", read_kernelsu_state);
-
-bool get_ksu_state(void)
-{
-	return enable_kernelsu >= 1;
-}
-#else
-bool get_ksu_state(void)
-{
-	return true;
-}
-#endif /* CONFIG_KSU_CMDLINE */
-
 static struct workqueue_struct *ksu_workqueue;
 
 bool ksu_queue_work(struct work_struct *work)
@@ -60,37 +36,17 @@ extern void ksu_sucompat_init();
 extern void ksu_sucompat_exit();
 extern void ksu_ksud_init();
 extern void ksu_ksud_exit();
-#ifdef CONFIG_KSU_TRACEPOINT_HOOK
-extern void ksu_trace_register();
-extern void ksu_trace_unregister();
-#endif
 
 int __init kernelsu_init(void)
 {
-	pr_info("kernelsu.enabled=%d\n", (int)get_ksu_state());
-
-#ifdef CONFIG_KSU_CMDLINE
-	if (!get_ksu_state()) {
-		pr_info_once("drivers is disabled.");
-		return 0;
-	}
-#endif
-
 #ifdef CONFIG_KSU_DEBUG
-	pr_alert(
-		"*************************************************************");
-	pr_alert(
-		"**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
-	pr_alert(
-		"**                                                         **");
-	pr_alert(
-		"**         You are running KernelSU in DEBUG mode          **");
-	pr_alert(
-		"**                                                         **");
-	pr_alert(
-		"**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
-	pr_alert(
-		"*************************************************************");
+	pr_alert("*************************************************************");
+	pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
+	pr_alert("**                                                         **");
+	pr_alert("**         You are running KernelSU in DEBUG mode          **");
+	pr_alert("**                                                         **");
+	pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
+	pr_alert("*************************************************************");
 #endif
 
 	ksu_core_init();
@@ -101,16 +57,11 @@ int __init kernelsu_init(void)
 
 	ksu_throne_tracker_init();
 
+#ifdef CONFIG_KSU_WITH_KPROBES
 	ksu_sucompat_init();
-
-#ifdef CONFIG_KSU_KPROBES_HOOK
 	ksu_ksud_init();
 #else
-	pr_debug("init ksu driver\n");
-#endif
-
-#ifdef CONFIG_KSU_TRACEPOINT_HOOK
-	ksu_trace_register();
+	pr_alert("KPROBES is disabled, KernelSU may not work, please check https://kernelsu.org/guide/how-to-integrate-for-non-gki.html");
 #endif
 
 #ifdef MODULE
@@ -123,26 +74,16 @@ int __init kernelsu_init(void)
 
 void kernelsu_exit(void)
 {
-#ifdef CONFIG_KSU_CMDLINE
-	if (!get_ksu_state()) {
-		return;
-	}
-#endif
 	ksu_allowlist_exit();
 
 	ksu_throne_tracker_exit();
 
 	destroy_workqueue(ksu_workqueue);
 
-#ifdef CONFIG_KSU_KPROBES_HOOK
+#ifdef CONFIG_KSU_WITH_KPROBES
 	ksu_ksud_exit();
-#endif
-
-#ifdef CONFIG_KSU_TRACEPOINT_HOOK
-	ksu_trace_unregister();
-#endif
-
 	ksu_sucompat_exit();
+#endif
 
 	ksu_core_exit();
 }
@@ -154,7 +95,6 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("weishu");
 MODULE_DESCRIPTION("Android KernelSU");
 
-#include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
 MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 #endif
