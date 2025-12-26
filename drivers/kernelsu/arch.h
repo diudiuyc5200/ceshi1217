@@ -18,19 +18,33 @@
 #define __PT_SP_REG sp
 #define __PT_IP_REG pc
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
-#define PRCTL_SYMBOL "__arm64_sys_prctl"
+#define REBOOT_SYMBOL "__arm64_sys_reboot"
 #define SYS_READ_SYMBOL "__arm64_sys_read"
-#define SYS_NEWFSTATAT_SYMBOL "__arm64_sys_newfstatat"
-#define SYS_FACCESSAT_SYMBOL "__arm64_sys_faccessat"
 #define SYS_EXECVE_SYMBOL "__arm64_sys_execve"
-#else
-#define PRCTL_SYMBOL "sys_prctl"
+
+extern long __arm64_sys_setns(const struct pt_regs *regs);
+
+#elif defined(__arm__)
+
+// Oversimplified version of https://github.com/backslashxx/KernelSU/blob/master/kernel/arch.h#L29
+#define __PT_PARM1_REG uregs[0]
+#define __PT_PARM2_REG uregs[1]
+#define __PT_PARM3_REG uregs[2]
+#define __PT_SYSCALL_PARM4_REG uregs[3] 
+#define __PT_CCALL_PARM4_REG uregs[3]
+#define __PT_PARM5_REG uregs[4]
+#define __PT_PARM6_REG uregs[5]
+#define __PT_RET_REG uregs[14]
+#define __PT_FP_REG uregs[11]	/* Works only with CONFIG_FRAME_POINTER */
+#define __PT_RC_REG uregs[0]
+#define __PT_SP_REG uregs[13]
+#define __PT_IP_REG uregs[12]
+
+#define REBOOT_SYMBOL "sys_reboot"
 #define SYS_READ_SYMBOL "sys_read"
-#define SYS_NEWFSTATAT_SYMBOL "sys_newfstatat"
-#define SYS_FACCESSAT_SYMBOL "sys_faccessat"
 #define SYS_EXECVE_SYMBOL "sys_execve"
-#endif
+
+extern long sys_setns(const struct pt_regs *regs);
 
 #elif defined(__x86_64__)
 
@@ -47,22 +61,17 @@
 #define __PT_RC_REG ax
 #define __PT_SP_REG sp
 #define __PT_IP_REG ip
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
-#define PRCTL_SYMBOL "__x64_sys_prctl"
+
+#define REBOOT_SYMBOL "__x64_sys_reboot"
 #define SYS_READ_SYMBOL "__x64_sys_read"
-#define SYS_NEWFSTATAT_SYMBOL "__x64_sys_newfstatat"
-#define SYS_FACCESSAT_SYMBOL "__x64_sys_faccessat"
 #define SYS_EXECVE_SYMBOL "__x64_sys_execve"
-#else
-#define PRCTL_SYMBOL "sys_prctl"
-#define SYS_READ_SYMBOL "sys_read"
-#define SYS_NEWFSTATAT_SYMBOL "sys_newfstatat"
-#define SYS_FACCESSAT_SYMBOL "sys_faccessat"
-#define SYS_EXECVE_SYMBOL "sys_execve"
-#endif
+
+extern long __x64_sys_setns(const struct pt_regs *regs);
 
 #else
+#ifdef CONFIG_KSU_SYSCALL_HOOK
 #error "Unsupported arch"
+#endif
 #endif
 
 /* allow some architecutres to override `struct pt_regs` */
@@ -83,10 +92,6 @@
 #define PT_REGS_SP(x) (__PT_REGS_CAST(x)->__PT_SP_REG)
 #define PT_REGS_IP(x) (__PT_REGS_CAST(x)->__PT_IP_REG)
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
 #define PT_REAL_REGS(regs) ((struct pt_regs *)PT_REGS_PARM1(regs))
-#else
-#define PT_REAL_REGS(regs) ((regs))
-#endif
 
 #endif
