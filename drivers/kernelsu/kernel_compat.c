@@ -7,16 +7,19 @@
 #include <linux/sched.h>
 #endif
 #include <linux/uaccess.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #include "klog.h" // IWYU pragma: keep
-#include "kernel_compat.h" // Add check Huawei Device
+#include "kernel_compat.h"
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0) || \
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0) ||                           \
 	defined(CONFIG_IS_HW_HISI) || defined(CONFIG_KSU_ALLOWLIST_WORKAROUND)
 #include <linux/key.h>
 #include <linux/errno.h>
 #include <linux/cred.h>
-struct key *init_session_keyring = NULL;
 
+extern int install_session_keyring_to_cred(struct cred *, struct key *);
+struct key *init_session_keyring = NULL;
 static inline int install_session_keyring(struct key *keyring)
 {
 	struct cred *new;
@@ -36,53 +39,9 @@ static inline int install_session_keyring(struct key *keyring)
 }
 #endif
 
-extern struct task_struct init_task;
-
-// mnt_ns context switch for environment that android_init->nsproxy->mnt_ns != init_task.nsproxy->mnt_ns, such as WSA
-struct ksu_ns_fs_saved {
-	struct nsproxy *ns;
-	struct fs_struct *fs;
-};
-
-static void ksu_save_ns_fs(struct ksu_ns_fs_saved *ns_fs_saved)
-{
-	ns_fs_saved->ns = current->nsproxy;
-	ns_fs_saved->fs = current->fs;
-}
-
-static void ksu_load_ns_fs(struct ksu_ns_fs_saved *ns_fs_saved)
-{
-	current->nsproxy = ns_fs_saved->ns;
-	current->fs = ns_fs_saved->fs;
-}
-
-static bool android_context_saved_checked = false;
-static bool android_context_saved_enabled = false;
-static struct ksu_ns_fs_saved android_context_saved;
-
-void ksu_android_ns_fs_check(void)
-{
-	if (android_context_saved_checked)
-		return;
-	android_context_saved_checked = true;
-	task_lock(current);
-	if (current->nsproxy && current->fs &&
-	    current->nsproxy->mnt_ns != init_task.nsproxy->mnt_ns) {
-		android_context_saved_enabled = true;
-#ifdef CONFIG_KSU_DEBUG
-		pr_info("android context saved enabled due to init mnt_ns(%p) != android mnt_ns(%p)\n",
-			current->nsproxy->mnt_ns, init_task.nsproxy->mnt_ns);
-#endif
-		ksu_save_ns_fs(&android_context_saved);
-	} else {
-		pr_info("android context saved disabled\n");
-	}
-	task_unlock(current);
-}
-
 struct file *ksu_filp_open_compat(const char *filename, int flags, umode_t mode)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0) || \
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0) ||                           \
 	defined(CONFIG_IS_HW_HISI) || defined(CONFIG_KSU_ALLOWLIST_WORKAROUND)
 	if (init_session_keyring != NULL && !current_cred()->session_keyring &&
 	    (current->flags & PF_WQ_WORKER)) {
@@ -90,33 +49,13 @@ struct file *ksu_filp_open_compat(const char *filename, int flags, umode_t mode)
 		install_session_keyring(init_session_keyring);
 	}
 #endif
-	// switch mnt_ns even if current is not wq_worker, to ensure what we open is the correct file in android mnt_ns, rather than user created mnt_ns
-	struct ksu_ns_fs_saved saved;
-	if (android_context_saved_enabled) {
-#ifdef CONFIG_KSU_DEBUG
-		pr_info("start switch current nsproxy and fs to android context\n");
-#endif
-		task_lock(current);
-		ksu_save_ns_fs(&saved);
-		ksu_load_ns_fs(&android_context_saved);
-		task_unlock(current);
-	}
-	struct file *fp = filp_open(filename, flags, mode);
-	if (android_context_saved_enabled) {
-		task_lock(current);
-		ksu_load_ns_fs(&saved);
-		task_unlock(current);
-#ifdef CONFIG_KSU_DEBUG
-		pr_info("switch current nsproxy and fs back to saved successfully\n");
-#endif
-	}
-	return fp;
+	return filp_open(filename, flags, mode);
 }
 
 ssize_t ksu_kernel_read_compat(struct file *p, void *buf, size_t count,
 			       loff_t *pos)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0) || \
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0) ||                          \
 	defined(KSU_OPTIONAL_KERNEL_READ)
 	return kernel_read(p, buf, count, pos);
 #else
@@ -132,7 +71,7 @@ ssize_t ksu_kernel_read_compat(struct file *p, void *buf, size_t count,
 ssize_t ksu_kernel_write_compat(struct file *p, const void *buf, size_t count,
 				loff_t *pos)
 {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0) || \
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0) ||                          \
 	defined(KSU_OPTIONAL_KERNEL_WRITE)
 	return kernel_write(p, buf, count, pos);
 #else
@@ -145,7 +84,7 @@ ssize_t ksu_kernel_write_compat(struct file *p, const void *buf, size_t count,
 #endif
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0) || \
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 8, 0) ||                           \
 	defined(KSU_OPTIONAL_STRNCPY)
 long ksu_strncpy_from_user_nofault(char *dst, const void __user *unsafe_addr,
 				   long count)
@@ -239,3 +178,63 @@ long ksu_copy_from_user_nofault(void *dst, const void __user *src, size_t size)
 	return 0;
 #endif
 }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+
+struct action_cache {
+	DECLARE_BITMAP(allow_native, SECCOMP_ARCH_NATIVE_NR);
+#ifdef SECCOMP_ARCH_COMPAT
+	DECLARE_BITMAP(allow_compat, SECCOMP_ARCH_COMPAT_NR);
+#endif
+};
+
+struct seccomp_filter {
+	refcount_t refs;
+	refcount_t users;
+	bool log;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+	bool wait_killable_recv;
+#endif
+	struct action_cache cache;
+	struct seccomp_filter *prev;
+	struct bpf_prog *prog;
+	struct notification *notif;
+	struct mutex notify_lock;
+	wait_queue_head_t wqh;
+};
+
+void ksu_seccomp_clear_cache(struct seccomp_filter *filter, int nr)
+{
+	if (!filter) {
+		return;
+	}
+
+	if (nr >= 0 && nr < SECCOMP_ARCH_NATIVE_NR) {
+		clear_bit(nr, filter->cache.allow_native);
+	}
+
+#ifdef SECCOMP_ARCH_COMPAT
+	if (nr >= 0 && nr < SECCOMP_ARCH_COMPAT_NR) {
+		clear_bit(nr, filter->cache.allow_compat);
+	}
+#endif
+}
+
+void ksu_seccomp_allow_cache(struct seccomp_filter *filter, int nr)
+{
+	if (!filter) {
+		return;
+	}
+
+	if (nr >= 0 && nr < SECCOMP_ARCH_NATIVE_NR) {
+		set_bit(nr, filter->cache.allow_native);
+	}
+
+#ifdef SECCOMP_ARCH_COMPAT
+	if (nr >= 0 && nr < SECCOMP_ARCH_COMPAT_NR) {
+		set_bit(nr, filter->cache.allow_compat);
+	}
+#endif
+}
+
+#endif
