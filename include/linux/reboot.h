@@ -35,7 +35,6 @@ extern int reboot_default;
 extern int reboot_cpu;
 extern int reboot_force;
 
-extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
 extern int register_reboot_notifier(struct notifier_block *);
 extern int unregister_reboot_notifier(struct notifier_block *);
 
