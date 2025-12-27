@@ -109,6 +109,7 @@ union bpf_attr;
 #define __SC_ARGS(t, a)	a
 #define __SC_TEST(t, a) (void)BUILD_BUG_ON_ZERO(!__TYPE_IS_LL(t) && sizeof(t) > sizeof(long))
 
+
 #ifdef CONFIG_FTRACE_SYSCALLS
 #define __SC_STR_ADECL(t, a)	#a
 #define __SC_STR_TDECL(t, a)	#t
@@ -117,7 +118,7 @@ extern struct trace_event_class event_class_syscall_enter;
 extern struct trace_event_class event_class_syscall_exit;
 extern struct trace_event_functions enter_syscall_print_funcs;
 extern struct trace_event_functions exit_syscall_print_funcs;
-extern long do_faccessat(int dfd, const char __user *filename, int mode);
+
 
 #define SYSCALL_TRACE_ENTER_EVENT(sname)				\
 	static struct syscall_metadata __syscall_meta_##sname;		\
@@ -868,6 +869,7 @@ asmlinkage long sys_fanotify_mark(int fanotify_fd, unsigned int flags,
 				  u64 mask, int fd,
 				  const char  __user *pathname);
 asmlinkage long sys_syncfs(int fd);
+extern long do_faccessat(int dfd, const char __user *filename, int mode);
 
 asmlinkage long sys_fork(void);
 asmlinkage long sys_vfork(void);
