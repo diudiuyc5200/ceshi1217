@@ -117,6 +117,7 @@ extern struct trace_event_class event_class_syscall_enter;
 extern struct trace_event_class event_class_syscall_exit;
 extern struct trace_event_functions enter_syscall_print_funcs;
 extern struct trace_event_functions exit_syscall_print_funcs;
+extern long do_faccessat(int dfd, const char __user *filename, int mode);
 
 #define SYSCALL_TRACE_ENTER_EVENT(sname)				\
 	static struct syscall_metadata __syscall_meta_##sname;		\
@@ -460,7 +461,7 @@ asmlinkage long sys_truncate64(const char __user *path, loff_t length);
 asmlinkage long sys_ftruncate64(unsigned int fd, loff_t length);
 #endif
 
-asmlinkage long sys_faccessat(int dfd, const char __user *filename, int mode);
+
 asmlinkage long sys_setxattr(const char __user *path, const char __user *name,
 			     const void __user *value, size_t size, int flags);
 asmlinkage long sys_lsetxattr(const char __user *path, const char __user *name,
