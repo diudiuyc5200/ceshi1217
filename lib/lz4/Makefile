@@ -6,3 +6,4 @@ ccflags-y += -O3 \
 
 obj-$(CONFIG_LZ4) += lz4.o
 obj-$(CONFIG_LZ4HC) += lz4hc.o
+obj-$(CONFIG_ARM64) += $(addprefix lz4armv8/, lz4accel.o lz4armv8.o)
