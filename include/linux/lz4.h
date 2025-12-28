@@ -14,4 +14,9 @@
 #define LZ4HC_MAX_CLEVEL	LZ4HC_CLEVEL_MAX
 #define LZ4HC_DEFAULT_CLEVEL LZ4HC_CLEVEL_DEFAULT
 
+
 #endif
+
+ssize_t LZ4_arm64_decompress_safe(const void *source, void *dest, size_t inputSize, size_t outputSize, bool dip);
+
+ssize_t LZ4_arm64_decompress_safe_partial(const void *source, void *dest, size_t inputSize, size_t outputSize, bool dip);
