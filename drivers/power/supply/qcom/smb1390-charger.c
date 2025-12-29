@@ -87,7 +87,9 @@
 #define ILIM_VOTER		"ILIM_VOTER"
 #define FCC_VOTER		"FCC_VOTER"
 #define ICL_VOTER		"ICL_VOTER"
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 #define ICL_CHANGE_VOTER	"ICL_CHANGE_VOTER"
+#endif
 #define TAPER_END_VOTER		"TAPER_END_VOTER"
 #define WIRELESS_VOTER		"WIRELESS_VOTER"
 #define SRC_VOTER		"SRC_VOTER"
@@ -140,7 +142,9 @@ struct smb1390 {
 	int			irqs[NUM_IRQS];
 	bool			status_change_running;
 	bool			taper_work_running;
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 	bool			taper_early_trigger;
+#endif
 	struct smb1390_iio	iio;
 	int			irq_status;
 	int			taper_entry_fv;
@@ -345,6 +349,7 @@ static ssize_t stat2_show(struct class *c, struct class_attribute *attr,
 }
 static CLASS_ATTR_RO(stat2);
 
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 static ssize_t model_name_show(struct class *c, struct class_attribute *attr,
 			 char *buf)
 {
@@ -358,6 +363,7 @@ static ssize_t model_name_show(struct class *c, struct class_attribute *attr,
 		return snprintf(buf, PAGE_SIZE, "%s\n", "smb1390");
 }
 static CLASS_ATTR_RO(model_name);
+#endif
 
 static ssize_t enable_show(struct class *c, struct class_attribute *attr,
 			   char *buf)
@@ -485,7 +491,9 @@ static struct attribute *cp_class_attrs[] = {
 	&class_attr_toggle_switcher.attr,
 	&class_attr_die_temp.attr,
 	&class_attr_isns.attr,
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 	&class_attr_model_name.attr,
+#endif
 	NULL,
 };
 ATTRIBUTE_GROUPS(cp_class);
@@ -536,7 +544,11 @@ static int smb1390_ilim_vote_cb(struct votable *votable, void *data,
 	}
 
 	/* ILIM less than 1A is not accurate; disable charging */
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 	if (ilim_uA < 900000) {
+#else
+	if (ilim_uA < 1000000) {
+#endif
 		pr_debug("ILIM %duA is too low to allow charging\n", ilim_uA);
 		vote(chip->disable_votable, ILIM_VOTER, true, 0);
 	} else {
@@ -592,17 +604,20 @@ static int smb1390_notifier_cb(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
-
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 #define TAPER_CAPACITY_THR		55
 #define TAPER_CAPCITY_DELTA		1
 #define BATT_COOL_THR		220
+#endif
 static void smb1390_status_change_work(struct work_struct *work)
 {
 	struct smb1390 *chip = container_of(work, struct smb1390,
 					    status_change_work);
 	union power_supply_propval pval = {0, };
 	int max_fcc_ma, rc;
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 	int capacity, batt_temp, charge_type;
+#endif
 
 	if (!is_psy_voter_available(chip))
 		goto out;
@@ -634,7 +649,9 @@ static void smb1390_status_change_work(struct work_struct *work)
 		 */
 		if (pval.intval == POWER_SUPPLY_CP_WIRELESS) {
 			vote(chip->ilim_votable, ICL_VOTER, false, 0);
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 			vote(chip->ilim_votable, ICL_CHANGE_VOTER, false, 0);
+#endif
 			rc = power_supply_get_property(chip->dc_psy,
 					POWER_SUPPLY_PROP_CURRENT_MAX, &pval);
 			if (rc < 0)
@@ -673,7 +690,7 @@ static void smb1390_status_change_work(struct work_struct *work)
 		if (get_effective_result(chip->disable_votable))
 			goto out;
 
-
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 		rc = power_supply_get_property(chip->batt_psy,
 			       POWER_SUPPLY_PROP_CAPACITY, &pval);
 		if (rc < 0) {
@@ -722,6 +739,7 @@ static void smb1390_status_change_work(struct work_struct *work)
 				chip->taper_early_trigger = false;
 			}
 		}
+#endif
 
 		rc = power_supply_get_property(chip->batt_psy,
 				POWER_SUPPLY_PROP_CHARGE_TYPE, &pval);
@@ -746,7 +764,9 @@ static void smb1390_status_change_work(struct work_struct *work)
 				BATT_PROFILE_VOTER);
 		vote(chip->fcc_votable, CP_VOTER,
 				max_fcc_ma > 0 ? true : false, max_fcc_ma);
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 		chip->taper_early_trigger = false;
+#endif
 		vote(chip->disable_votable, SOC_LEVEL_VOTER, true, 0);
 	}
 
@@ -760,13 +780,16 @@ static void smb1390_taper_work(struct work_struct *work)
 	struct smb1390 *chip = container_of(work, struct smb1390, taper_work);
 	union power_supply_propval pval = {0, };
 	int rc, fcc_uA;
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 	int capacity;
+#endif
 
 	if (!is_psy_voter_available(chip))
 		goto out;
 
 	chip->taper_entry_fv = get_effective_result(chip->fv_votable);
 	while (true) {
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 		rc = power_supply_get_property(chip->batt_psy,
 			       POWER_SUPPLY_PROP_CAPACITY, &pval);
 		if (rc < 0) {
@@ -783,6 +806,7 @@ static void smb1390_taper_work(struct work_struct *work)
 		if ((capacity < (TAPER_CAPACITY_THR - TAPER_CAPCITY_DELTA))
 				&& !chip->taper_early_trigger)
 			chip->taper_early_trigger = true;
+#endif
 
 		rc = power_supply_get_property(chip->batt_psy,
 					POWER_SUPPLY_PROP_CHARGE_TYPE, &pval);
@@ -886,7 +910,10 @@ static void smb1390_destroy_votables(struct smb1390 *chip)
 
 static int smb1390_init_hw(struct smb1390 *chip)
 {
-	int rc, val;
+	int rc;
+#ifdef CONFIG_MACH_XIAOMI_SM8150
+	int val;
+#endif
 
 	/*
 	 * charge pump is initially disabled; this indirectly votes to allow
@@ -912,6 +939,7 @@ static int smb1390_init_hw(struct smb1390 *chip)
 	if (rc < 0)
 		return rc;
 
+#ifdef CONFIG_MACH_XIAOMI_SM8150
 	rc = smb1390_read(chip, 0x1032, &val);
 
 	rc = smb1390_masked_write(chip, 0x1032, 0x0F, 0x07);
@@ -919,6 +947,7 @@ static int smb1390_init_hw(struct smb1390 *chip)
 
 	if (rc < 0)
 		return rc;
+#endif
 
 	return 0;
 }
@@ -1071,8 +1100,8 @@ out_notifier:
 out_votables:
 	smb1390_destroy_votables(chip);
 out_work:
-	cancel_work(&chip->taper_work);
-	cancel_work(&chip->status_change_work);
+	cancel_work_sync(&chip->taper_work);
+	cancel_work_sync(&chip->status_change_work);
 	wakeup_source_unregister(chip->cp_ws);
 	return rc;
 }
@@ -1087,8 +1116,8 @@ static int smb1390_remove(struct platform_device *pdev)
 	/* explicitly disable charging */
 	vote(chip->disable_votable, USER_VOTER, true, 0);
 	vote(chip->disable_votable, SOC_LEVEL_VOTER, true, 0);
-	cancel_work(&chip->taper_work);
-	cancel_work(&chip->status_change_work);
+	cancel_work_sync(&chip->taper_work);
+	cancel_work_sync(&chip->status_change_work);
 	wakeup_source_unregister(chip->cp_ws);
 	smb1390_destroy_votables(chip);
 	smb1390_release_channels(chip);
