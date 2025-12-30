@@ -1,4 +1,5 @@
 /* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -407,8 +408,9 @@ void fg_notify_charger(struct fg_dev *fg)
 		}
 	}
 
-	/*
-	if (fg->bp.fastchg_curr_ma > 0) {
+	fg_dbg(fg, FG_STATUS, "Notified charger on float voltage and FCC\n");
+
+	/*if (fg->bp.fastchg_curr_ma > 0) {
 		prop.intval = fg->bp.fastchg_curr_ma * 1000;
 		rc = power_supply_set_property(fg->batt_psy,
 				POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
@@ -418,8 +420,7 @@ void fg_notify_charger(struct fg_dev *fg)
 				rc);
 			return;
 		}
-	}
-	*/
+	}*/
 }
 
 bool batt_psy_initialized(struct fg_dev *fg)

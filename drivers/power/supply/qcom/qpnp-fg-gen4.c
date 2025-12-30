@@ -1,4 +1,5 @@
 /* Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -336,7 +337,7 @@ struct bias_config {
 	int	bias_kohms;
 };
 
-static int fg_gen4_debug_mask;
+static int fg_gen4_debug_mask = FG_STATUS | FG_IRQ;
 module_param_named(
 	debug_mask, fg_gen4_debug_mask, int, 0600
 );
@@ -4672,29 +4673,6 @@ static int fg_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CALIBRATE:
 		pval->intval = chip->calib_level;
 		break;
-	case POWER_SUPPLY_PROP_FASTCHARGE_MODE:
-		pval->intval = chip->fastcharge_mode_enabled;
-		break;
-	case POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT:
-		pval->intval = fg_get_ffc_iterm_for_chg(fg);
-		break;
-	case POWER_SUPPLY_PROP_SYS_TERMINATION_CURRENT:
-		pval->intval = chip->dt.sys_term_curr_ma;
-		break;
-	case POWER_SUPPLY_PROP_FFC_SYS_TERMINATION_CURRENT:
-		pval->intval = chip->dt.ffc_sys_term_curr_ma;
-		break;
-	case POWER_SUPPLY_PROP_VBATT_FULL_VOL:
-		pval->intval = fg->bp.vbatt_full_mv;
-		break;
-	case POWER_SUPPLY_PROP_FFC_VBATT_FULL_VOL:
-		pval->intval = fg->bp.ffc_vbatt_full_mv;
-		break;
-	case POWER_SUPPLY_PROP_KI_COEFF_CURRENT:
-		pval->intval = chip->dt.ffc_ki_coeff_med_hi_chg_thr_ma;
-		break;
-	case POWER_SUPPLY_PROP_TYPEC_MODE:
-		return -ENODATA;
 	default:
 		pr_err("unsupported property %d\n", psp);
 		rc = -EINVAL;
@@ -5869,6 +5847,7 @@ static int fg_gen4_parse_nvmem_dt(struct fg_gen4_chip *chip)
 #define DEFAULT_CL_MAX_LIM_DECIPERC	0
 #define DEFAULT_CL_DELTA_BATT_SOC	10
 #define BTEMP_DELTA_LOW			0
+/* set BTEMP_DELTA_HIGH to 10 to avoid batt-temp-delta irq wakeup frequently */
 #define BTEMP_DELTA_HIGH		10
 #define DEFAULT_ESR_PULSE_THRESH_MA	47
 #define DEFAULT_ESR_MEAS_CURR_MA	120
@@ -6238,11 +6217,7 @@ static void soc_work_fn(struct work_struct *work)
 {
 	struct fg_dev *fg = container_of(work,
 				struct fg_dev, soc_work.work);
-	struct fg_gen4_chip *chip = container_of(fg,
-				struct fg_gen4_chip, fg);
-	int msoc = 0, soc = 0, curr_ua = 0, volt_uv = 0, temp = 0;
-	int esr_uohms = 0;
-	int cycle_count;
+	int soc = 0, temp = 0;
 	int rc;
 	static int prev_soc = -EINVAL;
 
@@ -6250,38 +6225,10 @@ static void soc_work_fn(struct work_struct *work)
 	if (rc < 0)
 		pr_err("Error in getting capacity, rc=%d\n", rc);
 
-	rc = fg_get_msoc_raw(fg, &msoc);
-	if (rc < 0)
-		pr_err("Error in getting msoc, rc=%d\n", rc);
-
-	rc = fg_get_battery_resistance(fg, &esr_uohms);
-	if (rc < 0)
-		pr_err("Error in getting esr_uohms, rc=%d\n", rc);
-
-	fg_get_battery_current(fg, &curr_ua);
-	if (rc < 0)
-		pr_err("failed to get current, rc=%d\n", rc);
-
-	rc = fg_get_battery_voltage(fg, &volt_uv);
-	if (rc < 0)
-		pr_err("failed to get voltage, rc=%d\n", rc);
-
 	rc = fg_gen4_get_battery_temp(fg, &temp);
 	if (rc < 0)
 		pr_err("Error in getting batt_temp, rc=%d\n", rc);
 
-	rc = get_cycle_count(chip->counter, &cycle_count);
-	if (rc < 0)
-		pr_err("failed to get cycle count, rc=%d\n", rc);
-
-	pr_info("adjust_soc: s %d r %d i %d v %d t %d cc %d m 0x%02x\n",
-			soc,
-			esr_uohms,
-			curr_ua/1000,
-			volt_uv/1000,
-			temp,
-			cycle_count,
-			msoc);
 
 	if (temp < 450 && fg->last_batt_temp >= 450) {
 		/* follow the way that fg_notifier_cb use wake lock */
