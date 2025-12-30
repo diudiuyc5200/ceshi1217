@@ -1,5 +1,4 @@
 /* Copyright (c) 2017-2019 The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -327,7 +326,7 @@ static ssize_t stat1_show(struct class *c, struct class_attribute *attr,
 	rc = smb1390_read(chip, CORE_STATUS1_REG, &val);
 	if (rc < 0)
 		return -EINVAL;
-	/*pr_info("smb1390 CORE_STATUS1_REG: 0x%x\n", val);*/
+
 	return snprintf(buf, PAGE_SIZE, "%x\n", val);
 }
 static CLASS_ATTR_RO(stat1);
@@ -341,7 +340,7 @@ static ssize_t stat2_show(struct class *c, struct class_attribute *attr,
 	rc = smb1390_read(chip, CORE_STATUS2_REG, &val);
 	if (rc < 0)
 		return -EINVAL;
-	/*pr_info("smb1390 CORE_STATUS2_REG: 0x%x\n", val);*/
+
 	return snprintf(buf, PAGE_SIZE, "%x\n", val);
 }
 static CLASS_ATTR_RO(stat2);
@@ -378,7 +377,6 @@ static ssize_t enable_store(struct class *c, struct class_attribute *attr,
 	if (kstrtoul(buf, 0, &val))
 		return -EINVAL;
 
-	pr_info("enable smb1390: %d\n", val);
 	vote(chip->disable_votable, USER_VOTER, !val, 0);
 	return count;
 }
@@ -539,10 +537,10 @@ static int smb1390_ilim_vote_cb(struct votable *votable, void *data,
 
 	/* ILIM less than 1A is not accurate; disable charging */
 	if (ilim_uA < 900000) {
-		pr_info("ILIM %duA is too low to allow charging\n", ilim_uA);
+		pr_debug("ILIM %duA is too low to allow charging\n", ilim_uA);
 		vote(chip->disable_votable, ILIM_VOTER, true, 0);
 	} else {
-		pr_info("setting ILIM to %duA\n", ilim_uA);
+		pr_debug("setting ILIM to %duA\n", ilim_uA);
 		rc = smb1390_masked_write(chip, CORE_FTRIM_ILIM_REG,
 				CFG_ILIM_MASK,
 				DIV_ROUND_CLOSEST(ilim_uA - 500000, 100000));
@@ -915,11 +913,9 @@ static int smb1390_init_hw(struct smb1390 *chip)
 		return rc;
 
 	rc = smb1390_read(chip, 0x1032, &val);
-	pr_err("default smb1390 400K 0x1032_REG: 0x%x\n", val);
 
 	rc = smb1390_masked_write(chip, 0x1032, 0x0F, 0x07);
 	rc = smb1390_read(chip, 0x1032, &val);
-	pr_err("modify smb1390 800K 0x1032_REG: 0x%x\n", val);
 
 	if (rc < 0)
 		return rc;

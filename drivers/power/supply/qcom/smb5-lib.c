@@ -1546,11 +1546,6 @@ static int set_sdp_current(struct smb_charger *chg, int icl_ua)
 	u8 icl_options;
 	const struct apsd_result *apsd_result = smblib_get_apsd_result(chg);
 
-	if (icl_ua == USBIN_500MA)
-	{
-		icl_ua = USBIN_900MA;
-	}
-
 	/* power source is SDP */
 	switch (icl_ua) {
 	case USBIN_100MA:
@@ -2829,24 +2824,6 @@ bool smblib_support_liquid_feature(struct smb_charger *chg)
 	return chg->support_liquid;
 }
 
-int smblib_get_prop_battery_charging_enabled(struct smb_charger *chg,
-					     union power_supply_propval *val)
-{
-	int rc;
-	u8 reg;
-
-	rc = smblib_read(chg, CHARGING_ENABLE_CMD_REG, &reg);
-	if (rc < 0) {
-		smblib_err(chg,
-			"Couldn't read battery CHARGING_ENABLE_CMD rc=%d\n", rc);
-		return rc;
-	}
-
-	reg = reg & CHARGING_ENABLE_CMD_BIT;
-	val->intval = (reg == CHARGING_ENABLE_CMD_BIT);
-	return 0;
-}
-
 /***********************
  * BATTERY PSY SETTERS *
  ***********************/
@@ -3302,33 +3279,6 @@ int smblib_set_prop_rechg_soc_thresh(struct smb_charger *chg,
 	chg->auto_recharge_soc = val->intval;
 
 	return rc;
-}
-
-int smblib_set_prop_battery_charging_enabled(struct smb_charger *chg,
-					     const union power_supply_propval *val)
-{
-	int rc;
-
-	smblib_dbg(chg, PR_MISC, "%s intval= %x\n", __func__, val->intval);
-
-	if (val->intval == 1) {
-		rc = smblib_masked_write(chg, CHARGING_ENABLE_CMD_REG,
-			CHARGING_ENABLE_CMD_BIT, CHARGING_ENABLE_CMD_BIT);
-		if (rc < 0) {
-			smblib_err(chg, "Couldn't enable charging rc=%d\n", rc);
-			return rc;
-		}
-	} else if (val->intval == 0) {
-		rc = smblib_masked_write(chg, CHARGING_ENABLE_CMD_REG,
-			CHARGING_ENABLE_CMD_BIT, 0);
-		if (rc < 0) {
-			smblib_err(chg, "Couldn't disable charging rc=%d\n", rc);
-			return rc;
-		}
-	} else
-		smblib_err(chg, "Couldn't disable charging rc=%d\n", rc);
-
-	return 0;
 }
 
 int smblib_run_aicl(struct smb_charger *chg, int type)
