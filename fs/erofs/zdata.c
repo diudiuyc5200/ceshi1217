@@ -8,30 +8,7 @@
 #include <linux/prefetch.h>
 #include <linux/overflow.h>
 #include <linux/cpuhotplug.h>
-#include <linux/pagemap.h>
-#include <linux/page-flags.h> // 添加这行
 #include <trace/events/erofs.h>
-
-// 添加条件编译定义
-#ifndef attach_page_private
-static inline void attach_page_private(struct page *page, unsigned long data)
-{
-    page->private = data;
-    SetPagePrivate(page);
-}
-#endif
-
-#ifndef detach_page_private
-static inline unsigned long detach_page_private(struct page *page)
-{
-    unsigned long data = page_private(page);
-    ClearPagePrivate(page);
-    page->private = 0;
-    return data;
-}
-#endif
-
-// 文件的其余部分保持不变...
 
 /*
  * since pclustersize is variable for big pcluster feature, introduce slab
