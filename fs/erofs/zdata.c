@@ -9,7 +9,7 @@
 #include <linux/overflow.h>
 #include <linux/cpuhotplug.h>
 #include <trace/events/erofs.h>
-
+#include <linux/sched.h>
 /*
  * since pclustersize is variable for big pcluster feature, introduce slab
  * pools implementation for different pcluster sizes.
