@@ -8,7 +8,7 @@
  */
 
 #include <linux/vmalloc.h>
-#include <linux/xxhash.h>
+#include <linux/jhash.h>
 #include <linux/highmem.h>
 
 #include "zram_drv.h"
@@ -28,21 +28,18 @@ u64 zram_dedup_meta_size(struct zram *zram)
 	return (u64)atomic64_read(&zram->stats.meta_data_size);
 }
 
-static u64 zram_dedup_checksum(unsigned char *mem)
+static u32 zram_dedup_checksum(unsigned char *mem)
 {
-	return xxh64(mem, PAGE_SIZE, 0);
+	return jhash(mem, PAGE_SIZE, 0);
 }
 
 void zram_dedup_insert(struct zram *zram, struct zram_entry *new,
-				u64 checksum)
+				u32 checksum)
 {
 	struct zram_hash *hash;
 	struct rb_root *rb_root;
 	struct rb_node **rb_node, *parent = NULL;
 	struct zram_entry *entry;
-
-	if (!zram_dedup_enabled(zram))
-		return;
 
 	new->checksum = checksum;
 	hash = &zram->hash[checksum % zram->hash_size];
@@ -91,7 +88,7 @@ static unsigned long zram_dedup_put(struct zram *zram,
 				struct zram_entry *entry)
 {
 	struct zram_hash *hash;
-	u64 checksum;
+	u32 checksum;
 	unsigned long val;
 
 	checksum = entry->checksum;
@@ -107,56 +104,11 @@ static unsigned long zram_dedup_put(struct zram *zram,
 
 	spin_unlock(&hash->lock);
 
-	return val;
-}
-
-static struct zram_entry *__zram_dedup_get(struct zram *zram,
-				struct zram_hash *hash, unsigned char *mem,
-				struct zram_entry *entry)
-{
-	struct zram_entry *tmp, *prev = NULL;
-	struct rb_node *rb_node;
-
-	/* find left-most entry with same checksum */
-	while ((rb_node = rb_prev(&entry->rb_node))) {
-		tmp = rb_entry(rb_node, struct zram_entry, rb_node);
-		if (tmp->checksum != entry->checksum)
-			break;
-
-		entry = tmp;
-	}
-
-again:
-	entry->refcount++;
-	atomic64_add(entry->len, &zram->stats.dup_data_size);
-	spin_unlock(&hash->lock);
-
-	if (prev)
-		zram_entry_free(zram, prev);
-
-	if (zram_dedup_match(zram, entry, mem))
-		return entry;
-
-	spin_lock(&hash->lock);
-	tmp = NULL;
-	rb_node = rb_next(&entry->rb_node);
-	if (rb_node)
-		tmp = rb_entry(rb_node, struct zram_entry, rb_node);
-
-	if (tmp && (tmp->checksum == entry->checksum)) {
-		prev = entry;
-		entry = tmp;
-		goto again;
-	}
-
-	spin_unlock(&hash->lock);
-	zram_entry_free(zram, entry);
-
-	return NULL;
+	return entry->refcount;
 }
 
 static struct zram_entry *zram_dedup_get(struct zram *zram,
-				unsigned char *mem, u64 checksum)
+				unsigned char *mem, u32 checksum)
 {
 	struct zram_hash *hash;
 	struct zram_entry *entry;
@@ -168,8 +120,18 @@ static struct zram_entry *zram_dedup_get(struct zram *zram,
 	rb_node = hash->rb_root.rb_node;
 	while (rb_node) {
 		entry = rb_entry(rb_node, struct zram_entry, rb_node);
-		if (checksum == entry->checksum)
-			return __zram_dedup_get(zram, hash, mem, entry);
+		if (checksum == entry->checksum) {
+			entry->refcount++;
+			atomic64_add(entry->len, &zram->stats.dup_data_size);
+			spin_unlock(&hash->lock);
+
+			if (zram_dedup_match(zram, entry, mem))
+				return entry;
+
+			zram_entry_free(zram, entry);
+
+			return NULL;
+		}
 
 		if (checksum < entry->checksum)
 			rb_node = rb_node->rb_left;
@@ -182,13 +144,10 @@ static struct zram_entry *zram_dedup_get(struct zram *zram,
 }
 
 struct zram_entry *zram_dedup_find(struct zram *zram, struct page *page,
-				u64 *checksum)
+				u32 *checksum)
 {
 	void *mem;
 	struct zram_entry *entry;
-
-	if (!zram_dedup_enabled(zram))
-		return NULL;
 
 	mem = kmap_atomic(page);
 	*checksum = zram_dedup_checksum(mem);
@@ -202,9 +161,6 @@ struct zram_entry *zram_dedup_find(struct zram *zram, struct page *page,
 void zram_dedup_init_entry(struct zram *zram, struct zram_entry *entry,
 				unsigned long handle, unsigned int len)
 {
-	if (!zram_dedup_enabled(zram))
-		return;
-
 	entry->handle = handle;
 	entry->refcount = 1;
 	entry->len = len;
@@ -212,9 +168,6 @@ void zram_dedup_init_entry(struct zram *zram, struct zram_entry *entry,
 
 bool zram_dedup_put_entry(struct zram *zram, struct zram_entry *entry)
 {
-	if (!zram_dedup_enabled(zram))
-		return true;
-
 	if (zram_dedup_put(zram, entry))
 		return false;
 
@@ -225,9 +178,6 @@ int zram_dedup_init(struct zram *zram, size_t num_pages)
 {
 	int i;
 	struct zram_hash *hash;
-
-	if (!zram_dedup_enabled(zram))
-		return 0;
 
 	zram->hash_size = num_pages >> ZRAM_HASH_SHIFT;
 	zram->hash_size = min_t(size_t, ZRAM_HASH_SIZE_MAX, zram->hash_size);
