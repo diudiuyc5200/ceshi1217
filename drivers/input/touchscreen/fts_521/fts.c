@@ -5396,7 +5396,7 @@ int fts_read_touchmode_data(void)
 	return ret;
 }
 
-static void fts_init_touchmode_data()
+static void fts_init_touchmode_data(void)
 {
 	int i;
 	struct fts_hw_platform_data *bdata = NULL;
@@ -5700,7 +5700,7 @@ static void fts_update_grip_mode(void)
 	return;
 }
 
-static void fts_update_touchmode_data()
+static void fts_update_touchmode_data(void)
 {
 	bool update = false;
 	int i, j, ret = 0;
