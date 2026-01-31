@@ -177,7 +177,9 @@ struct zram {
     atomic64_t avg_size;
 #endif
 };
-
+#ifdef CONFIG_HSWAP
+extern int zram0_free_size(void);
+#endif
 /* 现在可以定义内联函数，因为 struct zram 已经完整定义了 */
 static inline void zram_set_entry(struct zram *zram, u32 index, unsigned long handle)
 {
