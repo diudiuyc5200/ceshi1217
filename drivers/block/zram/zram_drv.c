@@ -2400,11 +2400,6 @@ static void zram_reset_device(struct zram *zram)
 
 	zram->limit_pages = 0;
 
-	if (!init_done(zram)) {
-		up_write(&zram->init_lock);
-		return;
-	}
-
 	comp = zram->comp;
 	disksize = zram->disksize;
 	zram->disksize = 0;
