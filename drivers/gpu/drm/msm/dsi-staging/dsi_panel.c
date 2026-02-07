@@ -5726,6 +5726,9 @@ int dsi_panel_enable(struct dsi_panel *panel)
 
 	mutex_unlock(&panel->panel_lock);
 	pr_info("[SDE] %s: DSI_CMD_SET_ON\n", __func__);
+
+	    dsi_panel_set_hbm(panel, false);
+	
 	return rc;
 }
 
