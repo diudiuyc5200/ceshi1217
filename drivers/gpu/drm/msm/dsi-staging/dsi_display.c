@@ -5251,6 +5251,7 @@ error:
 }
 
 static struct attribute *display_fs_attrs[] = {
+&dev_attr_hbm.attr,
 	NULL,
 };
 static struct attribute_group display_fs_attrs_group = {
