@@ -74,6 +74,37 @@ struct dsi_display *get_primary_display(void)
 
 EXPORT_SYMBOL(get_primary_display);
 
+static ssize_t hbm_show(struct device *dev,
+                             struct device_attribute *attr, char *buf)
+{
+    return scnprintf(buf, PAGE_SIZE, "%d\n", hbm);
+}
+
+static ssize_t hbm_store(struct device *dev,
+                              struct device_attribute *attr,
+                              const char *buf, size_t count)
+{
+    struct dsi_display *display = dev_get_drvdata(dev);
+    int val, rc;
+
+    if (!display || !display->panel)
+        return -ENODEV;
+
+    if (kstrtoint(buf, 0, &val))
+        return -EINVAL;
+
+    val = !!val;
+
+    dsi_panel_acquire_panel_lock(display->panel);
+    rc = dsi_panel_set_hbm(display->panel, val);
+    dsi_panel_release_panel_lock(display->panel);
+
+    if (rc)
+        return rc;
+
+    return count;
+}
+
 static void dsi_display_mask_ctrl_error_interrupts(struct dsi_display *display,
 			u32 mask, bool enable)
 {
