@@ -5215,6 +5215,13 @@ error:
 	return rc;
 }
 
+static struct attribute *display_fs_attrs[] = {
+	NULL,
+};
+static struct attribute_group display_fs_attrs_group = {
+	.attrs = display_fs_attrs,
+};
+
 static int dsi_display_sysfs_init(struct dsi_display *display)
 {
 	int rc = 0;
