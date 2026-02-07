@@ -5203,6 +5203,9 @@ static DEVICE_ATTR(dynamic_dsi_clock, 0644,
 			sysfs_dynamic_dsi_clk_read,
 			sysfs_dynamic_dsi_clk_write);
 
+static DEVICE_ATTR(hbm, 0644,
+                   hbm_show, hbm_store);
+
 static struct attribute *dynamic_dsi_clock_fs_attrs[] = {
 	&dev_attr_dynamic_dsi_clock.attr,
 	NULL,
