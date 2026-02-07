@@ -5758,7 +5758,10 @@ error:
 		}
 	}
 	mutex_unlock(&panel->panel_lock);
+(void)dsi_panel_set_hbm(panel, false);
 
+    if (panel->hbm_requested)
+        (void)dsi_panel_set_hbm(panel, true);
 	return rc;
 }
 
