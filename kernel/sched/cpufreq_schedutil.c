@@ -22,7 +22,7 @@
 #include <linux/sched/rt.h>
 
 #define SUGOV_KTHREAD_PRIORITY	50
-#define UTIL_BOOST_FACTOR 140
+#define UTIL_BOOST_FACTOR 110
 
 /* 添加 task_is_booster 函数声明 */
 extern bool task_is_booster(struct task_struct *p);
