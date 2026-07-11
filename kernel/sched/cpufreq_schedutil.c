@@ -21,7 +21,7 @@
 #include <linux/kernel.h>
 
 #define SUGOV_KTHREAD_PRIORITY	50
-#define UTIL_BOOST_FACTOR 140
+#define UTIL_BOOST_FACTOR 150
 
 struct sugov_tunables {
 	struct gov_attr_set attr_set;
