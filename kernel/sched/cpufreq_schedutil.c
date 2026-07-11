@@ -412,12 +412,12 @@ static bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu)
 static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #endif /* CONFIG_NO_HZ_COMMON */
 
-#define NL_RATIO 85
-#define DEFAULT_HISPEED_LOAD 90
+#define NL_RATIO 65
+#define DEFAULT_HISPEED_LOAD 85
 #define DEFAULT_HISPEED_FREQ 1008800
 #define DEFAULT_CPU0_RTG_BOOST_FREQ 0
-#define DEFAULT_CPU4_RTG_BOOST_FREQ 1056000
-#define DEFAULT_CPU7_RTG_BOOST_FREQ 0
+#define DEFAULT_CPU4_RTG_BOOST_FREQ 1400000
+#define DEFAULT_CPU7_RTG_BOOST_FREQ 1400000
 static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 			      unsigned long *max)
 {
@@ -442,7 +442,7 @@ static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 
 	// 修改此处，不再直接赋值*max，改为增加50%算力
 	if (is_hiload && nl >= mult_frac(cpu_util, NL_RATIO, 100)) {
-		unsigned long temp = *util + mult_frac(*max, 50, 100);
+		unsigned long temp = *util + mult_frac(*max, 80, 100);
 		*util = min(temp, *max);
 	}
 
