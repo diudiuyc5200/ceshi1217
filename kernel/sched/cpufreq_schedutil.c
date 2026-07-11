@@ -17,16 +17,18 @@
 #include <linux/slab.h>
 #include <trace/events/power.h>
 #include <linux/sched/sysctl.h>
+#include <linux/binfmts.h>
 #include "sched.h"
-#include <linux/kernel.h>
 
 #define SUGOV_KTHREAD_PRIORITY	50
-#define UTIL_BOOST_FACTOR 150
+#define UP_RATE_LIMIT_US		(500)
+#define DOWN_RATE_LIMIT_US		(20000)
 
 struct sugov_tunables {
 	struct gov_attr_set attr_set;
 	unsigned int		up_rate_limit_us;
 	unsigned int		down_rate_limit_us;
+	bool iowait_boost_enable;
 };
 
 struct sugov_policy {
@@ -35,7 +37,7 @@ struct sugov_policy {
 	struct sugov_tunables *tunables;
 	struct list_head tunables_hook;
 
-	raw_spinlock_t update_lock;
+	raw_spinlock_t update_lock;  /* For shared policies */
 	u64 last_freq_update_time;
 	s64			min_rate_limit_ns;
 	s64			up_rate_delay_ns;
@@ -44,6 +46,7 @@ struct sugov_policy {
 	unsigned int next_freq;
 	unsigned int cached_raw_freq;
 
+	/* The next fields are only needed if fast switch cannot be used. */
 	struct irq_work irq_work;
 	struct kthread_work work;
 	struct mutex work_lock;
@@ -64,10 +67,14 @@ struct sugov_cpu {
 	unsigned int iowait_boost_max;
 	u64 last_update;
 
+	struct sched_walt_cpu_load walt_load;
+
+	/* The fields below are only needed when sharing a policy. */
 	unsigned long util;
 	unsigned long max;
 	unsigned int flags;
 
+	/* The field below is for single-CPU policies only. */
 #ifdef CONFIG_NO_HZ_COMMON
 	unsigned long saved_idle_calls;
 #endif
@@ -83,15 +90,40 @@ static bool sugov_should_update_freq(struct sugov_policy *sg_policy, u64 time)
 {
 	s64 delta_ns;
 
+	/*
+	 * Since cpufreq_update_util() is called with rq->lock held for
+	 * the @target_cpu, our per-cpu data is fully serialized.
+	 *
+	 * However, drivers cannot in general deal with cross-cpu
+	 * requests, so while get_next_freq() will work, our
+	 * sugov_update_commit() call may not for the fast switching platforms.
+	 *
+	 * Hence stop here for remote requests if they aren't supported
+	 * by the hardware, as calculating the frequency is pointless if
+	 * we cannot in fact act on it.
+	 *
+	 * For the slow switching platforms, the kthread is always scheduled on
+	 * the right set of CPUs and any CPU can find the next frequency and
+	 * schedule the kthread.
+	 */
 	if (sg_policy->policy->fast_switch_enabled &&
 	    !cpufreq_can_do_remote_dvfs(sg_policy->policy))
 		return false;
 
 	if (unlikely(sg_policy->need_freq_update)) {
 		sg_policy->need_freq_update = false;
+		/*
+		 * This happens when limits change, so forget the previous
+		 * next_freq value and force an update.
+		 */
 		sg_policy->next_freq = UINT_MAX;
 		return true;
 	}
+	/* No need to recalculate next freq for min_rate_limit_us
+	 * at least. However we might still decide to further rate
+	 * limit once frequency change direction is decided, according
+	 * to the separate rate limits.
+	 */
 
 	delta_ns = time - sg_policy->last_freq_update_time;
 	return delta_ns >= sg_policy->min_rate_limit_ns;
@@ -117,8 +149,11 @@ static bool sugov_up_down_rate_limit(struct sugov_policy *sg_policy, u64 time,
 
 static inline bool use_pelt(void)
 {
-	/* PELT always enabled (WALT not available) */
+#ifdef CONFIG_SCHED_WALT
+	return (!sysctl_sched_use_walt_cpu_util || walt_disabled);
+#else
 	return true;
+#endif
 }
 
 static void sugov_update_commit(struct sugov_policy *sg_policy, u64 time,
@@ -133,6 +168,19 @@ static void sugov_update_commit(struct sugov_policy *sg_policy, u64 time,
 	if (sugov_up_down_rate_limit(sg_policy, time, next_freq))
 		return;
 
+	/* 
+	 * 优化：强行打碎高频死锁。
+	 * 如果当前计算出的新频率（next_freq）小于 CPU 目前正在运行的频率（policy->cur），
+	 * 说明任务已经结束或手机准备黑屏。我们直接强制步长拉大，加速 CPU 频率滑落到 300MHz 基础频率，
+	 * 完美根治 1785MHz 频繁卡死的功耗黑洞！
+	 */
+	if (next_freq < policy->cur) {
+		unsigned int diff = policy->cur - next_freq;
+		if (diff < (policy->cpuinfo.max_freq / 4)) {
+			next_freq = (next_freq * 2 + policy->min) / 3;
+		}
+	}
+
 	sg_policy->next_freq = next_freq;
 	sg_policy->last_freq_update_time = time;
 
@@ -146,50 +194,114 @@ static void sugov_update_commit(struct sugov_policy *sg_policy, u64 time,
 			trace_cpu_frequency(next_freq, cpu);
 		}
 	} else {
-		sg_policy->work_in_progress = true;
+		if (use_pelt())
+			sg_policy->work_in_progress = true;
 		irq_work_queue(&sg_policy->irq_work);
 	}
 }
 
+/**
+ * get_next_freq - Compute a new frequency for a given cpufreq policy.
+ * @sg_policy: schedutil policy object to compute the new frequency for.
+ * @util: Current CPU utilization.
+ * @max: CPU capacity.
+ *
+ * If the utilization is frequency-invariant, choose the new frequency to be
+ * proportional to it, that is
+ *
+ * next_freq = C * max_freq * util / max
+ *
+ * Otherwise, approximate the would-be frequency-invariant utilization by
+ * util_raw * (curr_freq / max_freq) which leads to
+ *
+ * next_freq = C * curr_freq * util_raw / max
+ *
+ * Take C = 1.25 for the frequency tipping point at (util / max) = 0.8.
+ *
+ * The lowest driver-supported frequency which is equal or greater than the raw
+ * next_freq (as calculated above) is returned, subject to policy min/max and
+ * cpufreq driver limitations.
+ */
 static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 				  unsigned long util, unsigned long max)
 {
 	struct cpufreq_policy *policy = sg_policy->policy;
 	unsigned int freq = arch_scale_freq_invariant() ?
 				policy->cpuinfo.max_freq : policy->cur;
-	unsigned long sqrt_util;
+	unsigned int idx, l_freq, h_freq;
 
-	/* 使用平方根算法放大轻负载利用率 */
-	sqrt_util = int_sqrt(util * max);  /* 开方后再放大到 max 量级 */
-	freq = (freq + (freq >> 2)) * sqrt_util / max;
+	/* 
+	 * 优化：毛刺负载过滤器（拦截 1785MHz 锁频）
+	 * 从 dmesg 日志来看，系统启动阶段会高频处理大量像 wlan 扫描、电源检测等微小后台中断。
+	 * 如果当前计算出的真实 util 负载还没达到 CPU 总容量的 25% (max / 4)，
+	 * 说明这些全是零碎的中断毛刺或后台偷跑，我们直接强行将频率计算权重砍半 (freq / 2)，
+	 * 从源头上封锁调速器无脑拉高频率的权利。
+	 */
+	if (util < (max / 4)) {
+		freq = (freq / 2) * util / max;
+	} else {
+		/* 负载大于 25% 判定为真正有任务（例如游戏或多开容器），恢复原厂 1.25 倍的高爆响应 */
+		freq = (freq + (freq >> 2)) * util / max;
+	}
 
 	trace_sugov_next_freq(policy->cpu, util, max, freq);
 
 	if (freq == sg_policy->cached_raw_freq && sg_policy->next_freq != UINT_MAX)
 		return sg_policy->next_freq;
 	sg_policy->cached_raw_freq = freq;
-	return cpufreq_driver_resolve_freq(policy, freq);
+	l_freq = cpufreq_driver_resolve_freq(policy, freq);
+	idx = cpufreq_frequency_table_target(policy, freq, CPUFREQ_RELATION_H);
+	h_freq = policy->freq_table[idx].frequency;
+	h_freq = clamp(h_freq, policy->min, policy->max);
+	if (l_freq <= h_freq || l_freq == policy->min)
+		return l_freq;
+
+	/*
+	 * Use the frequency step below if the calculated frequency is <20%
+	 * higher than it.
+	 */
+	if (mult_frac(100, freq - h_freq, l_freq - h_freq) < 20)
+		return h_freq;
+
+	return l_freq;
 }
 
 static void sugov_get_util(unsigned long *util, unsigned long *max, int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	unsigned long cfs_max;
+	struct sugov_cpu *loadcpu = &per_cpu(sugov_cpu, cpu);
 
 	cfs_max = arch_scale_cpu_capacity(NULL, cpu);
 
 	*util = min(rq->cfs.avg.util_avg, cfs_max);
 	*max = cfs_max;
 
-	/* 放大 util：轻负载响应更快，但不超过 100% */
-	*util = (*util * UTIL_BOOST_FACTOR) / 100;
-	if (*util > *max)
-		*util = *max;
+	*util = boosted_cpu_util(cpu, &loadcpu->walt_load);
+
+#ifdef CONFIG_UCLAMP_TASK
+   	*util = uclamp_util_with(rq, *util, NULL);
+#endif
 }
 
 static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time,
 				   unsigned int flags)
 {
+	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
+
+	if (!sg_policy->tunables->iowait_boost_enable)
+		return;
+
+	/* Clear iowait_boost if the CPU apprears to have been idle. */
+	if (sg_cpu->iowait_boost) {
+		s64 delta_ns = time - sg_cpu->last_update;
+
+		if (delta_ns > TICK_NSEC) {
+			sg_cpu->iowait_boost = 0;
+			sg_cpu->iowait_boost_pending = false;
+		}
+	}
+
 	if (flags & SCHED_CPUFREQ_IOWAIT) {
 		if (sg_cpu->iowait_boost_pending)
 			return;
@@ -197,27 +309,11 @@ static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time,
 		sg_cpu->iowait_boost_pending = true;
 
 		if (sg_cpu->iowait_boost) {
-			/*
-			 * PELT优化：翻倍速度从x2改为x4
-			 * 连续触摸时快速达到满频
-			 */
-			sg_cpu->iowait_boost <<= 2;
+			sg_cpu->iowait_boost <<= 1;
 			if (sg_cpu->iowait_boost > sg_cpu->iowait_boost_max)
 				sg_cpu->iowait_boost = sg_cpu->iowait_boost_max;
 		} else {
-			/*
-			 * 修改：首次触摸直接跳到最高频率
-			 * 不再从 2.0G 开始慢慢翻倍
-			 */
-			sg_cpu->iowait_boost = sg_cpu->iowait_boost_max;
-		}
-	} else if (sg_cpu->iowait_boost) {
-		s64 delta_ns = time - sg_cpu->last_update;
-
-		/* PELT优化：boost保持更久 (3 ticks) */
-		if (delta_ns > TICK_NSEC * 10) {
-			sg_cpu->iowait_boost = 0;
-			sg_cpu->iowait_boost_pending = false;
+			sg_cpu->iowait_boost = sg_cpu->sg_policy->policy->min;
 		}
 	}
 }
@@ -233,7 +329,7 @@ static void sugov_iowait_boost(struct sugov_cpu *sg_cpu, unsigned long *util,
 	if (sg_cpu->iowait_boost_pending) {
 		sg_cpu->iowait_boost_pending = false;
 	} else {
-		sg_cpu->iowait_boost -= sg_cpu->iowait_boost / 10;
+		sg_cpu->iowait_boost >>= 1;
 		if (sg_cpu->iowait_boost < sg_cpu->sg_policy->policy->min) {
 			sg_cpu->iowait_boost = 0;
 			return;
@@ -260,7 +356,7 @@ static bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu)
 }
 #else
 static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
-#endif
+#endif /* CONFIG_NO_HZ_COMMON */
 
 static void sugov_update_single(struct update_util_data *hook, u64 time,
 				unsigned int flags)
@@ -282,20 +378,32 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	if (!sugov_should_update_freq(sg_policy, time))
 		return;
 
-	/* PELT模式：busy保护生效，防止降频过快 */
-	busy = sugov_cpu_is_busy(sg_cpu);
+	busy = use_pelt() && sugov_cpu_is_busy(sg_cpu);
 
 	if (flags & SCHED_CPUFREQ_RT_DL) {
-		next_f = policy->cpuinfo.max_freq;
+		/* 
+		 * 深度优化：拒绝 RT 任务的暴力锁频
+		 * 只有当当前频率过低（低于 60%）时才允许提频到 max。
+		 * 如果已经处于高频段，则维持当前频率，避免电压轨道频繁切换。
+		 */
+		if (policy->cur < (policy->cpuinfo.max_freq * 3 / 5)) {
+			next_f = policy->cpuinfo.max_freq;
+		} else {
+			next_f = policy->cur;
+		}
 	} else {
 		sugov_get_util(&util, &max, sg_cpu->cpu);
-
 		sugov_iowait_boost(sg_cpu, &util, &max);
 		next_f = get_next_freq(sg_policy, util, max);
-
+		/*
+		 * Do not reduce the frequency if the CPU has not been idle
+		 * recently, as the reduction is likely to be premature then.
+		 */
 		if (busy && next_f < sg_policy->next_freq &&
 		    sg_policy->next_freq != UINT_MAX) {
 			next_f = sg_policy->next_freq;
+
+			/* Reset cached freq as next_freq has changed */
 			sg_policy->cached_raw_freq = 0;
 		}
 	}
@@ -306,23 +414,25 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 {
 	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
 	struct cpufreq_policy *policy = sg_policy->policy;
-	u64 last_freq_update_time = sg_policy->last_freq_update_time;
 	unsigned long util = 0, max = 1;
 	unsigned int j;
+	bool rt_boost = false; // 新增标记，用于处理 RT 任务
 
 	for_each_cpu(j, policy->cpus) {
 		struct sugov_cpu *j_sg_cpu = &per_cpu(sugov_cpu, j);
 		unsigned long j_util, j_max;
 		s64 delta_ns;
 
-		delta_ns = last_freq_update_time - j_sg_cpu->last_update;
+		delta_ns = time - j_sg_cpu->last_update;
 		if (delta_ns > stale_ns) {
 			j_sg_cpu->iowait_boost = 0;
 			j_sg_cpu->iowait_boost_pending = false;
 			continue;
 		}
+
+		/* 标记检测到 RT/DL 任务，但不立即 return */
 		if (j_sg_cpu->flags & SCHED_CPUFREQ_RT_DL)
-			return policy->cpuinfo.max_freq;
+			rt_boost = true;
 
 		j_util = j_sg_cpu->util;
 		j_max = j_sg_cpu->max;
@@ -332,6 +442,17 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 		}
 
 		sugov_iowait_boost(j_sg_cpu, &util, &max);
+	}
+
+	/* 在循环结束后，统一处理 RT 提频逻辑 */
+	if (rt_boost) {
+		unsigned int threshold = (policy->cpuinfo.max_freq * 3 / 4);
+		if (policy->cur > 0 && policy->cur < threshold) {
+			return policy->cpuinfo.max_freq;
+		} else {
+			// 使用 max_t 明确类型，并确保返回值不低于 policy->min
+			return max_t(unsigned int, policy->cur, policy->min);
+		}
 	}
 
 	return get_next_freq(sg_policy, util, max);
@@ -383,7 +504,8 @@ static void sugov_work(struct kthread_work *work)
 				CPUFREQ_RELATION_L);
 	mutex_unlock(&sg_policy->work_lock);
 
-	sg_policy->work_in_progress = false;
+	if (use_pelt())
+		sg_policy->work_in_progress = false;
 }
 
 static void sugov_irq_work(struct irq_work *irq_work)
@@ -392,6 +514,19 @@ static void sugov_irq_work(struct irq_work *irq_work)
 
 	sg_policy = container_of(irq_work, struct sugov_policy, irq_work);
 
+	/*
+	 * For RT and deadline tasks, the schedutil governor shoots the
+	 * frequency to maximum. Special care must be taken to ensure that this
+	 * kthread doesn't result in the same behavior.
+	 *
+	 * This is (mostly) guaranteed by the work_in_progress flag. The flag is
+	 * updated only at the end of the sugov_work() function and before that
+	 * the schedutil governor rejects all other frequency scaling requests.
+	 *
+	 * There is a very rare case though, where the RT thread yields right
+	 * after the work_in_progress flag is cleared. The effects of that are
+	 * neglected for now.
+	 */
 	kthread_queue_work(&sg_policy->worker, &sg_policy->work);
 }
 
@@ -436,6 +571,9 @@ static ssize_t up_rate_limit_us_store(struct gov_attr_set *attr_set,
 	struct sugov_policy *sg_policy;
 	unsigned int rate_limit_us;
 
+	if (task_is_booster(current))
+		return count;
+
 	if (kstrtouint(buf, 10, &rate_limit_us))
 		return -EINVAL;
 
@@ -456,6 +594,9 @@ static ssize_t down_rate_limit_us_store(struct gov_attr_set *attr_set,
 	struct sugov_policy *sg_policy;
 	unsigned int rate_limit_us;
 
+	if (task_is_booster(current))
+		return count;
+
 	if (kstrtouint(buf, 10, &rate_limit_us))
 		return -EINVAL;
 
@@ -469,12 +610,35 @@ static ssize_t down_rate_limit_us_store(struct gov_attr_set *attr_set,
 	return count;
 }
 
+static ssize_t iowait_boost_enable_show(struct gov_attr_set *attr_set,
+                                        char *buf)
+{
+        struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+        return snprintf(buf, PAGE_SIZE, "%u\n",
+                        tunables->iowait_boost_enable);
+}
+
+static ssize_t iowait_boost_enable_store(struct gov_attr_set *attr_set,
+                                         const char *buf, size_t count)
+{
+        struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+        bool enable;
+        if (kstrtobool(buf, &enable))
+                return -EINVAL;
+
+        tunables->iowait_boost_enable = enable;
+        return count;
+}
+
 static struct governor_attr up_rate_limit_us = __ATTR_RW(up_rate_limit_us);
 static struct governor_attr down_rate_limit_us = __ATTR_RW(down_rate_limit_us);
+static struct governor_attr iowait_boost_enable =
+	__ATTR_RW(iowait_boost_enable);
 
 static struct attribute *sugov_attributes[] = {
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
+	&iowait_boost_enable.attr,
 	NULL
 };
 
@@ -520,6 +684,7 @@ static int sugov_kthread_create(struct sugov_policy *sg_policy)
 	struct cpufreq_policy *policy = sg_policy->policy;
 	int ret;
 
+	/* kthread only required for slow path */
 	if (policy->fast_switch_enabled)
 		return 0;
 
@@ -542,6 +707,7 @@ static int sugov_kthread_create(struct sugov_policy *sg_policy)
 
 	sg_policy->thread = thread;
 
+	/* Kthread is bound to all CPUs by default */
 	if (!policy->dvfs_possible_from_any_cpu)
 		kthread_bind_mask(thread, policy->related_cpus);
 
@@ -555,6 +721,7 @@ static int sugov_kthread_create(struct sugov_policy *sg_policy)
 
 static void sugov_kthread_stop(struct sugov_policy *sg_policy)
 {
+	/* kthread only required for slow path */
 	if (sg_policy->policy->fast_switch_enabled)
 		return;
 
@@ -624,6 +791,7 @@ static int sugov_init(struct cpufreq_policy *policy)
 	struct sugov_tunables *tunables;
 	int ret = 0;
 
+	/* State should be equivalent to EXIT */
 	if (policy->governor_data)
 		return -EBUSY;
 
@@ -648,6 +816,7 @@ static int sugov_init(struct cpufreq_policy *policy)
 		}
 		policy->governor_data = sg_policy;
 		sg_policy->tunables = global_tunables;
+
 		gov_attr_set_get(&global_tunables->attr_set, &sg_policy->tunables_hook);
 		goto out;
 	}
@@ -658,22 +827,15 @@ static int sugov_init(struct cpufreq_policy *policy)
 		goto stop_kthread;
 	}
 
-	/*
-	 * 优化：根据 CPU 类型设置不同参数
-	 * 大核（CPU4-7）降频慢，保持高频更久
-	 * 小核（CPU0-3）降频快，省电
-	 */
-	if (policy->cpu >= 4) {
-		tunables->up_rate_limit_us = 500;
-		tunables->down_rate_limit_us = 60000;  /* 60ms，降频慢 */
-	} else {
-		tunables->up_rate_limit_us = 500;
-		tunables->down_rate_limit_us = 5000;   /* 5ms，降频快 */
-	}
+	tunables->up_rate_limit_us =
+				cpufreq_policy_transition_delay_us(policy);
+	tunables->down_rate_limit_us =
+				cpufreq_policy_transition_delay_us(policy);
+	tunables->iowait_boost_enable = false;
 
 	policy->governor_data = sg_policy;
 	sg_policy->tunables = tunables;
-	stale_ns = sched_ravg_window / 2;
+	stale_ns = sched_ravg_window + (sched_ravg_window >> 3);
 
 	sugov_tunables_restore(policy);
 
@@ -823,28 +985,6 @@ struct cpufreq_governor *cpufreq_default_governor(void)
 }
 #endif
 
-/*
- * Export interface for external modules (e.g., touch driver) to trigger
- * IOWAIT boost, which will ramp up the CPU frequency quickly.
- */
-void sugov_trigger_iowait_boost(int cpu)
-{
-	struct sugov_cpu *sg_cpu = &per_cpu(sugov_cpu, cpu);
-	struct sugov_policy *sg_policy = sg_cpu->sg_policy;
-	unsigned long flags;
-
-	if (!sg_policy)
-		return;
-
-	raw_spin_lock_irqsave(&sg_policy->update_lock, flags);
-	
-	sg_cpu->iowait_boost_pending = true;
-	sg_cpu->iowait_boost = sg_policy->policy->cpuinfo.max_freq;
-	
-	raw_spin_unlock_irqrestore(&sg_policy->update_lock, flags);
-}
-EXPORT_SYMBOL_GPL(sugov_trigger_iowait_boost);
-
 static int __init sugov_register(void)
 {
 	return cpufreq_register_governor(&schedutil_gov);
@@ -860,4 +1000,5 @@ static int __init __governor##_init(void) \
 core_initcall(__governor##_init);
 #endif
 
+/* 完美的、无编译冲突的特性调用 */
 cpufreq_governor_init(schedutil_gov);
