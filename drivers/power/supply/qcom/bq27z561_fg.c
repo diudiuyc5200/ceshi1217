@@ -812,7 +812,7 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
          * / 72  = 72秒/1%  (约60分钟充50%)
          * / 144 = 144秒/1% (约120分钟充50%)
          */
-        soc_increment = elapsed_sec / 36;
+        soc_increment = elapsed_sec / 20;
         soc = bq->charge_start_soc + soc_increment;
 
         /* 限制最高 95% */
