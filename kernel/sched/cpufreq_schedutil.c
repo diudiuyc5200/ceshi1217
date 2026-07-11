@@ -22,7 +22,7 @@
 #include <linux/sched/rt.h>
 
 #define SUGOV_KTHREAD_PRIORITY	50
-#define UTIL_BOOST_FACTOR 120
+
 /* 添加 task_is_booster 函数声明 */
 extern bool task_is_booster(struct task_struct *p);
 
@@ -328,16 +328,14 @@ static void sugov_get_util(unsigned long *util, unsigned long *max, int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	unsigned long cfs_max;
+	struct sugov_cpu *loadcpu = &per_cpu(sugov_cpu, cpu);
 
 	cfs_max = arch_scale_cpu_capacity(NULL, cpu);
 
 	*util = min(rq->cfs.avg.util_avg, cfs_max);
 	*max = cfs_max;
 
-	/* 放大 util：轻负载响应更快，但不超过 100% */
-	*util = (*util * UTIL_BOOST_FACTOR) / 100;
-	if (*util > *max)
-		*util = *max;
+	*util = boosted_cpu_util(cpu, &loadcpu->walt_load);
 }
 
 static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time,
@@ -414,8 +412,8 @@ static bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu)
 static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #endif /* CONFIG_NO_HZ_COMMON */
 
-#define NL_RATIO 75
-#define DEFAULT_HISPEED_LOAD 85
+#define NL_RATIO 85
+#define DEFAULT_HISPEED_LOAD 90
 #define DEFAULT_HISPEED_FREQ 1008800
 #define DEFAULT_CPU0_RTG_BOOST_FREQ 0
 #define DEFAULT_CPU4_RTG_BOOST_FREQ 1056000
@@ -430,7 +428,6 @@ static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 	unsigned long cpu_util = sg_cpu->util;
 	bool is_hiload;
 	unsigned long pl = sg_cpu->walt_load.pl;
-
 	if (use_pelt())
 		return;
 
@@ -440,12 +437,14 @@ static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 	is_hiload = (cpu_util >= mult_frac(sg_policy->avg_cap,
 					   sg_policy->tunables->hispeed_load,
 					   100));
-
 	if (is_hiload && !is_migration)
 		*util = max(*util, sg_policy->hispeed_util);
 
-	if (is_hiload && nl >= mult_frac(cpu_util, NL_RATIO, 100))
-		*util = *max;
+	// 修改此处，不再直接赋值*max，改为增加50%算力
+	if (is_hiload && nl >= mult_frac(cpu_util, NL_RATIO, 100)) {
+		unsigned long temp = *util + mult_frac(*max, 50, 100);
+		*util = min(temp, *max);
+	}
 
 	if (sg_policy->tunables->pl) {
 		if (conservative_pl())
@@ -453,6 +452,7 @@ static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 		*util = max(*util, pl);
 	}
 }
+
 
 static inline unsigned long target_util(struct sugov_policy *sg_policy,
 				  unsigned int freq)
