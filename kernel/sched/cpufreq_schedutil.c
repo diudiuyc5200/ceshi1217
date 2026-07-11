@@ -416,8 +416,8 @@ static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #define DEFAULT_HISPEED_LOAD 85
 #define DEFAULT_HISPEED_FREQ 1008800
 #define DEFAULT_CPU0_RTG_BOOST_FREQ 0
-#define DEFAULT_CPU4_RTG_BOOST_FREQ 1400000
-#define DEFAULT_CPU7_RTG_BOOST_FREQ 1400000
+#define DEFAULT_CPU4_RTG_BOOST_FREQ 0
+#define DEFAULT_CPU7_RTG_BOOST_FREQ 0
 static void sugov_walt_adjust(struct sugov_cpu *sg_cpu, unsigned long *util,
 			      unsigned long *max)
 {
