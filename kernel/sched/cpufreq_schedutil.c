@@ -22,7 +22,7 @@
 #include <linux/sched/rt.h>
 
 #define SUGOV_KTHREAD_PRIORITY	50
-
+#define UTIL_BOOST_FACTOR 120
 /* 添加 task_is_booster 函数声明 */
 extern bool task_is_booster(struct task_struct *p);
 
@@ -328,14 +328,16 @@ static void sugov_get_util(unsigned long *util, unsigned long *max, int cpu)
 {
 	struct rq *rq = cpu_rq(cpu);
 	unsigned long cfs_max;
-	struct sugov_cpu *loadcpu = &per_cpu(sugov_cpu, cpu);
 
 	cfs_max = arch_scale_cpu_capacity(NULL, cpu);
 
 	*util = min(rq->cfs.avg.util_avg, cfs_max);
 	*max = cfs_max;
 
-	*util = boosted_cpu_util(cpu, &loadcpu->walt_load);
+	/* 放大 util：轻负载响应更快，但不超过 100% */
+	*util = (*util * UTIL_BOOST_FACTOR) / 100;
+	if (*util > *max)
+		*util = *max;
 }
 
 static void sugov_set_iowait_boost(struct sugov_cpu *sg_cpu, u64 time,
