@@ -234,6 +234,9 @@ struct bq_fg_chip {
     int last_charge_report_soc;   /* 上次报告的 SOC */
     int charge_stable_count;      /* 充电状态稳定计数器（去抖动） */
     /* ===== 新增结束 ===== */
+    /* ===== 新增 ===== */
+    int last_soc;
+    int last_volt;
 };
 #define bq_dbg(reason, fmt, ...)			\
 	do {						\
@@ -730,13 +733,13 @@ static int fg_voltage_to_soc(int voltage)
 /* ===== fg_read_rsoc：电压估算 + 时间驱动充电（完整版） ===== */
 static int fg_read_rsoc(struct bq_fg_chip *bq)
 {
-    static int last_soc = 70;
-    static int last_volt = 4000;
     int volt;
     int soc;
     int curr;
     bool is_charging;
     int ret;
+    int last_soc = bq->last_soc;
+    int last_volt = bq->last_volt;
 
     if (bq->fake_soc > 0)
         return bq->fake_soc;
@@ -758,29 +761,23 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     }
     last_volt = volt;
 
-    /* ===== 2. 检测充电状态（带去抖动） ===== */
+    /* ===== 2. 检测充电状态（带去抖动，适配大电流快充） ===== */
     ret = fg_read_current(bq, &curr);
     if (ret == 0) {
-        if (curr > 150) {
-            /* 检测到充电电流，计数器 +1 */
+        if (curr > 100) {
             bq->charge_stable_count++;
             if (bq->charge_stable_count >= 3) {
-                /* 连续 3 次检测到充电电流，确认为充电状态 */
                 is_charging = true;
             } else {
-                /* 尚未稳定，保持之前的状态 */
                 is_charging = bq->is_charging;
             }
-        } else if (curr < 50) {
-            /* 电流 < 50mA，确认为停止充电 */
+        } else if (curr < 30) {
             bq->charge_stable_count = 0;
             is_charging = false;
         } else {
-            /* 中间状态（50mA ~ 150mA），保持之前的状态 */
             is_charging = bq->is_charging;
         }
     } else {
-        /* 读取电流失败，保持之前的状态 */
         is_charging = bq->is_charging;
     }
 
@@ -788,10 +785,10 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     if (is_charging) {
         ktime_t now = ktime_get();
         ktime_t elapsed;
+        u64 elapsed_ms;
         int elapsed_sec;
         int soc_increment;
 
-        /* 首次进入充电状态，记录起点 */
         if (!bq->is_charging) {
             bq->charge_start_time = now;
             bq->charge_start_soc = last_soc;
@@ -802,40 +799,28 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
                    bq->charge_start_soc, volt, curr);
         }
 
-        /* 计算充电时长（秒） */
         elapsed = ktime_sub(now, bq->charge_start_time);
-        elapsed_sec = (int)ktime_to_ms(elapsed) / 1000;
+        elapsed_ms = ktime_to_ms(elapsed);
+        elapsed_sec = div_u64(elapsed_ms, 1000);
+        soc_increment = elapsed_sec / 36;
 
-        /*
-         * 充电速度调整：
-         * / 36  = 36秒/1%  (约30分钟充50%)
-         * / 72  = 72秒/1%  (约60分钟充50%)
-         * / 144 = 144秒/1% (约120分钟充50%)
-         */
-        soc_increment = elapsed_sec / 20;
         soc = bq->charge_start_soc + soc_increment;
-
-        /* 限制最高 95% */
+        if (soc < bq->charge_start_soc)
+            soc = bq->charge_start_soc;
         if (soc > 95)
             soc = 95;
 
-        /* 充电时 SOC 只增不减 */
-        if (soc < bq->charge_start_soc)
-            soc = bq->charge_start_soc;
-        if (soc < last_soc)
-            soc = last_soc;
-
-        /* 记录日志（每 5% 变化打印一次） */
-        if (soc >= bq->last_charge_report_soc + 5 ||
-            soc <= bq->last_charge_report_soc - 5) {
+        /* 每5%打印日志 */
+        if (soc >= bq->last_charge_report_soc + 5) {
             bq_dbg(PR_OEM, "CHARGING: elapsed=%ds, soc=%d%%, volt=%d, curr=%d\n",
                    elapsed_sec, soc, volt, curr);
             bq->last_charge_report_soc = soc;
         }
 
-        last_soc = soc;
         bq->batt_volt = volt;
         bq->batt_curr = curr;
+        bq->last_soc = soc;
+        bq->last_volt = volt;
         return soc;
     }
 
@@ -843,41 +828,37 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     if (bq->is_charging) {
         bq_dbg(PR_OEM, "CHARGING STOPPED: final_soc=%d\n", last_soc);
         bq->is_charging = false;
-        bq->charge_start_time = 0;
+        bq->charge_start_time = ktime_get();
         bq->charge_stable_count = 0;
     }
 
-    /* 根据电压估算 SOC */
     soc = fg_voltage_to_soc(volt);
-
     /* 放电时防止异常跳高（电压波动） */
     if (soc > last_soc + 10) {
         bq_dbg(PR_OEM, "DISCHARGE: soc jump %d->%d, using last\n", last_soc, soc);
         soc = last_soc;
     }
-
-    /* 放电时平滑下降，每次最多变化 3% */
+    /* 放电平滑限制 */
     if (soc > last_soc + 3)
         soc = last_soc + 3;
     if (soc < last_soc - 3)
         soc = last_soc - 3;
 
-    /* 记录日志（每 5% 变化打印一次） */
     if (soc >= last_soc + 5 || soc <= last_soc - 5) {
         bq_dbg(PR_OEM, "DISCHARGE: volt=%d, soc=%d%%, curr=%d\n",
                volt, soc, curr);
     }
 
-    /* ===== 5. 共同保护 ===== */
+    /* ===== 5. 边界保护 ===== */
     if (soc < 5)
         soc = 5;
     if (soc > 100)
         soc = 100;
 
-    last_soc = soc;
+    bq->last_soc = soc;
+    bq->last_volt = volt;
     bq->batt_volt = volt;
     bq->batt_curr = curr;
-
     return soc;
 }
 /* ===== fg_read_rsoc 结束 ===== */
@@ -1891,11 +1872,13 @@ static int bq_fg_probe(struct i2c_client *client,
 	bq->custom_charge_full = 0;
 	/* ===== 新增：初始化充电追踪变量 ===== */
 	bq->last_valid_discharge_soc = 50;
-bq->charge_start_time = 0;
+bq->charge_start_time = ktime_get();
 bq->charge_start_soc = 50;
 bq->is_charging = false;
 bq->last_charge_report_soc = 50;
 bq->charge_stable_count = 0;
+bq->last_soc = 70;
+bq->last_volt = 4000;
 /* ===== 新增结束 ===== */
 
 	if (bq->chip == BQ27Z561) {
