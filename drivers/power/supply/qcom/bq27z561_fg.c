@@ -730,8 +730,8 @@ static int fg_voltage_to_soc(int voltage)
 /* ===== fg_read_rsoc：电压估算 + 时间驱动充电（完整版） ===== */
 static int fg_read_rsoc(struct bq_fg_chip *bq)
 {
-    static int last_soc = 50;
-    static int last_volt = 3700;
+    static int last_soc = 70;
+    static int last_volt = 4000;
     int volt;
     int soc;
     int curr;
