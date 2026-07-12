@@ -815,7 +815,7 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         elapsed = ktime_sub(now, bq->charge_start_time);
         elapsed_ms = ktime_to_ms(elapsed);
         elapsed_sec = div_u64(elapsed_ms, 1000);
-        soc_increment = elapsed_sec / 36;
+        soc_increment = elapsed_sec / 10;
 
         // 纯计时算出的电量
         time_based_soc = bq->charge_start_soc + soc_increment;
