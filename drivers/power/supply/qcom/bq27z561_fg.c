@@ -781,13 +781,26 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         is_charging = bq->is_charging;
     }
 
-    /* ===== 3. 充电状态：时间驱动 SOC 上升 ===== */
+    /* ===== 3. 充电状态：时间+电压双重约束SOC，带45℃高温停充 ===== */
     if (is_charging) {
         ktime_t now = ktime_get();
         ktime_t elapsed;
         u64 elapsed_ms;
         int elapsed_sec;
         int soc_increment;
+        int time_based_soc;
+        int volt_based_soc;
+
+        // 高温45℃锁定电量，停止上涨
+        int temp = fg_read_temperature(bq);
+        if (temp >= 480) {
+            bq_dbg(PR_OEM, "HIGH TEMP STOP CHARGE, temp=%d (%.1f℃), hold soc=%d\n", temp, temp/10.0f, last_soc);
+            bq->last_soc = last_soc;
+            bq->last_volt = volt;
+            bq->batt_volt = volt;
+            bq->batt_curr = curr;
+            return last_soc;
+        }
 
         if (!bq->is_charging) {
             bq->charge_start_time = now;
@@ -804,16 +817,23 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         elapsed_sec = div_u64(elapsed_ms, 1000);
         soc_increment = elapsed_sec / 36;
 
-        soc = bq->charge_start_soc + soc_increment;
-        if (soc < bq->charge_start_soc)
-            soc = bq->charge_start_soc;
-        if (soc > 95)
-            soc = 95;
+        // 纯计时算出的电量
+        time_based_soc = bq->charge_start_soc + soc_increment;
+        if (time_based_soc < bq->charge_start_soc)
+            time_based_soc = bq->charge_start_soc;
+        if (time_based_soc > 95)
+            time_based_soc = 95;
+
+        // 当前电压对应的真实电量
+        volt_based_soc = fg_voltage_to_soc(volt);
+
+        // 双重限制：取更小值，杜绝虚满电
+        soc = min(time_based_soc, volt_based_soc);
 
         /* 每5%打印日志 */
         if (soc >= bq->last_charge_report_soc + 5) {
-            bq_dbg(PR_OEM, "CHARGING: elapsed=%ds, soc=%d%%, volt=%d, curr=%d\n",
-                   elapsed_sec, soc, volt, curr);
+            bq_dbg(PR_OEM, "CHARGING: elapsed=%ds, time_soc=%d, volt_soc=%d, final_soc=%d%%, volt=%d, curr=%d\n",
+                   elapsed_sec, time_based_soc, volt_based_soc, soc, volt, curr);
             bq->last_charge_report_soc = soc;
         }
 
