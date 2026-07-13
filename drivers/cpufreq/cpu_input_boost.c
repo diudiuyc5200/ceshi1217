@@ -22,12 +22,9 @@
 /* 添加 kp_active_mode 函数声明 */
 int kp_active_mode(void);
 
-static unsigned int input_boost_freq_little __read_mostly =
-	CONFIG_INPUT_BOOST_FREQ_LP;
-static unsigned int input_boost_freq_big __read_mostly =
-	CONFIG_INPUT_BOOST_FREQ_PERF;
-static unsigned int input_boost_freq_prime __read_mostly =
-	CONFIG_INPUT_BOOST_FREQ_PERFP;
+static unsigned int input_boost_freq_little __read_mostly = 1708800;
+static unsigned int input_boost_freq_big __read_mostly = 2016000;
+static unsigned int input_boost_freq_prime __read_mostly = 2016000;
 static unsigned int max_boost_freq_little __read_mostly =
 	CONFIG_MAX_BOOST_FREQ_LP;
 static unsigned int max_boost_freq_big __read_mostly =
@@ -97,11 +94,11 @@ static unsigned int get_input_boost_freq(struct cpufreq_policy *policy)
 	unsigned int freq;
 
 	if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
-		freq = input_boost_freq_little;
+		freq = 1708800;
 	else if (cpumask_test_cpu(policy->cpu, cpu_perf_mask))
-		freq = input_boost_freq_big;
+		freq = 2016000;
 	else
-		freq = input_boost_freq_prime;
+		freq = 2016000;
 	return min(freq, policy->max);
 }
 
