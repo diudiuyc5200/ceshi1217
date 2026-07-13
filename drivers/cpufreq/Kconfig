@@ -202,17 +202,6 @@ config CPU_FREQ_GOV_CONSERVATIVE
 
 	  If in doubt, say N.
 
-config CPU_BOOST
-	tristate "Event base short term CPU freq boost"
-	depends on CPU_FREQ
-	help
-	  This driver boosts the frequency of one or more CPUs based on
-	  various events that might occur in the system. As of now, the
-	  events it reacts to are:
-	  - Migration of important threads from one CPU to another.
-
-	  If in doubt, say N.
-
 config CPU_FREQ_GOV_SCHEDUTIL
 	bool "'schedutil' cpufreq policy governor"
 	depends on CPU_FREQ && SMP
@@ -310,7 +299,7 @@ if CPU_INPUT_BOOST
 
 config INPUT_BOOST_DURATION_MS
 	int "Input boost duration"
-	default "100"
+	default "40"
 	help
 	  Input boost duration in milliseconds.
 
@@ -322,19 +311,19 @@ config WAKE_BOOST_DURATION_MS
 
 config INPUT_BOOST_FREQ_LP
 	int "Low-power cluster boost freq"
-	default "0"
+	default "1708800"
 	help
 	  Input boost frequency for the low-power CPU cluster.
 
 config INPUT_BOOST_FREQ_PERF
 	int "Performance cluster boost freq"
-	default "0"
+	default "2016000"
 	help
 	  Input boost frequency for the performance CPU cluster.
 
 config INPUT_BOOST_FREQ_PERFP
 	int "Prime cluster boost freq"
-	default "0"
+	default "2016000"
 	help
 	  Input boost frequency for the prime CPU cluster.
 
@@ -424,7 +413,7 @@ config SCHEDUTIL_UP_RATE_LIMIT
 
 config SCHEDUTIL_DOWN_RATE_LIMIT
 	int "Default down rate-limit for schedutil"
-	default 0
+	default 60000
 	help
 	  This sets schedutil's default frequency down rate-limit in
 	  microseconds.
