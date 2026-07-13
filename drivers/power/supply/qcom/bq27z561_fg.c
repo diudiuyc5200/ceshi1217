@@ -781,19 +781,12 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         is_charging = bq->is_charging;
     }
 
-    /* ===== 3. 充电状态：时间+电压双重约束SOC，带45℃高温停充 ===== */
+    /* ===== 3. 充电状态：纯电压换算SOC，45℃高温停充 ===== */
     if (is_charging) {
         ktime_t now = ktime_get();
-        ktime_t elapsed;
-        u64 elapsed_ms;
-        int elapsed_sec;
-        int soc_increment;
-        int time_based_soc;
-        int volt_based_soc;
-
         // 高温45℃锁定电量，停止上涨
         int temp = fg_read_temperature(bq);
-        if (temp >= 480) {
+        if (temp >= 500) {
             bq_dbg(PR_OEM, "HIGH TEMP STOP CHARGE, temp=%d (%.1f℃), hold soc=%d\n", temp, temp/10.0f, last_soc);
             bq->last_soc = last_soc;
             bq->last_volt = volt;
@@ -804,37 +797,23 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
 
         if (!bq->is_charging) {
             bq->charge_start_time = now;
-            bq->charge_start_soc = last_soc;
             bq->is_charging = true;
-            bq->last_charge_report_soc = last_soc;
-            bq->charge_stable_count = 0;
-            bq_dbg(PR_OEM, "CHARGING START: soc=%d, volt=%d, curr=%d\n",
-                   bq->charge_start_soc, volt, curr);
+            bq_dbg(PR_OEM, "CHARGING START, volt=%d, curr=%d\n", volt, curr);
         }
 
-        elapsed = ktime_sub(now, bq->charge_start_time);
-        elapsed_ms = ktime_to_ms(elapsed);
-        elapsed_sec = div_u64(elapsed_ms, 1000);
-        soc_increment = elapsed_sec / 10;
+        // 充电完全使用电压查表，和放电逻辑统一
+        soc = fg_voltage_to_soc(volt);
 
-        // 纯计时算出的电量
-        time_based_soc = bq->charge_start_soc + soc_increment;
-        if (time_based_soc < bq->charge_start_soc)
-            time_based_soc = bq->charge_start_soc;
-        if (time_based_soc > 95)
-            time_based_soc = 95;
+        // 平滑防抖，电压小幅波动不会跳电量
+        if (soc > last_soc + 3)
+            soc = last_soc + 3;
+        if (soc < last_soc - 3)
+            soc = last_soc - 3;
+        if (soc > 95)
+            soc = 95;
 
-        // 当前电压对应的真实电量
-        volt_based_soc = fg_voltage_to_soc(volt);
-
-        // 双重限制：取更小值，杜绝虚满电
-        soc = min(time_based_soc, volt_based_soc);
-
-        /* 每5%打印日志 */
-        if (soc >= bq->last_charge_report_soc + 5) {
-            bq_dbg(PR_OEM, "CHARGING: elapsed=%ds, time_soc=%d, volt_soc=%d, final_soc=%d%%, volt=%d, curr=%d\n",
-                   elapsed_sec, time_based_soc, volt_based_soc, soc, volt, curr);
-            bq->last_charge_report_soc = soc;
+        if (soc >= last_soc + 5) {
+            bq_dbg(PR_OEM, "CHARGING_VOLT_BASED: volt=%d, soc=%d%%, curr=%d\n", volt, soc, curr);
         }
 
         bq->batt_volt = volt;
