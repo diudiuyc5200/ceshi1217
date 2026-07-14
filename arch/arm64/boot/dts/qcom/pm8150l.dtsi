@@ -234,7 +234,7 @@
 				qcom,ires-ua = <12500>;
 				qcom,hdrm-voltage-mv = <325>;
 				qcom,hdrm-vol-hi-lo-win-mv = <100>;
-				status = "ok";
+				//status = "disabled";
 			};
 
 			pm8150l_torch0: qcom,torch_0 {
@@ -271,7 +271,7 @@
 				qcom,ires-ua = <12500>;
 				qcom,hdrm-voltage-mv = <325>;
 				qcom,hdrm-vol-hi-lo-win-mv = <100>;
-				status = "ok";
+				//status = "disabled";
 			};
 
 			pm8150l_switch0: qcom,led_switch_0 {
