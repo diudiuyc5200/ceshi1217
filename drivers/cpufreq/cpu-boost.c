@@ -182,7 +182,7 @@ static void do_input_boost_rem(struct work_struct *work)
 	pr_debug("Resetting input boost min for all CPUs\n");
 	for_each_possible_cpu(i) {
 		i_sync_info = &per_cpu(sync_info, i);
-		i_sync_info->input_boost_min = 2016000;
+		i_sync_info->input_boost_min = 0;
 	}
 
 	/* Update policies for all online CPUs */
