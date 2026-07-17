@@ -327,20 +327,25 @@ static int cpu_boost_init(void)
 {
 	int cpu, ret;
 	struct cpu_sync *s;
-
 	cpu_boost_wq = alloc_workqueue("cpuboost_wq", WQ_HIGHPRI, 0);
 	if (!cpu_boost_wq)
 		return -EFAULT;
-
 	INIT_WORK(&input_boost_work, do_input_boost);
 	INIT_DELAYED_WORK(&input_boost_rem, do_input_boost_rem);
-
 	for_each_possible_cpu(cpu) {
 		s = &per_cpu(sync_info, cpu);
 		s->cpu = cpu;
+		// 新增：开机默认设置CPU4、CPU7 boost频率1401600
+		if (cpu == 4 || cpu == 7) {
+			s->input_boost_freq = 1401600;
+		} else {
+			s->input_boost_freq = 0; // 其余核心保持默认0
+		}
 	}
-	cpufreq_register_notifier(&boost_adjust_nb, CPUFREQ_POLICY_NOTIFIER);
+	// 新增：自动开启input_boost_enabled（因为有非0频率）
+	input_boost_enabled = true;
 
+	cpufreq_register_notifier(&boost_adjust_nb, CPUFREQ_POLICY_NOTIFIER);
 	ret = input_register_handler(&cpuboost_input_handler);
 	return 0;
 }
