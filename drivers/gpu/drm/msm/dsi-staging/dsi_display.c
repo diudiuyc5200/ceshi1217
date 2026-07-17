@@ -8068,6 +8068,10 @@ int dsi_display_esd_irq_ctrl(struct dsi_display *display,
 	return ret;
 }
 
+struct dsi_display *get_main_display(void) {
+	return primary_display;
+}
+
 static int __init dsi_display_register(void)
 {
 	dsi_phy_drv_register();
