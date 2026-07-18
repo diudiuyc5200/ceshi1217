@@ -412,8 +412,8 @@ static bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu)
 static inline bool sugov_cpu_is_busy(struct sugov_cpu *sg_cpu) { return false; }
 #endif /* CONFIG_NO_HZ_COMMON */
 
-#define NL_RATIO 75
-#define DEFAULT_HISPEED_LOAD 90
+#define NL_RATIO 55
+#define DEFAULT_HISPEED_LOAD 50
 #define DEFAULT_CPU0_RTG_BOOST_FREQ 1000000
 #define DEFAULT_CPU4_RTG_BOOST_FREQ 0
 #define DEFAULT_CPU7_RTG_BOOST_FREQ 0
@@ -881,7 +881,7 @@ static ssize_t iowait_boost_enable_store(struct gov_attr_set *attr_set,
 	if (kstrtobool(buf, &enable))
 		return -EINVAL;
 
-	tunables->iowait_boost_enable = enable;
+	tunables->able = enable;
 
 	return count;
 }
@@ -892,7 +892,7 @@ static struct governor_attr hispeed_load = __ATTR_RW(hispeed_load);
 static struct governor_attr hispeed_freq = __ATTR_RW(hispeed_freq);
 static struct governor_attr rtg_boost_freq = __ATTR_RW(rtg_boost_freq);
 static struct governor_attr pl = __ATTR_RW(pl);
-static struct governor_attr iowait_boost_enable = __ATTR_RW(iowait_boost_enable);
+static struct governor_attr able = __ATTR_RW(able);
 
 static struct attribute *sugov_attributes[] = {
 	&up_rate_limit_us.attr,
@@ -901,7 +901,7 @@ static struct attribute *sugov_attributes[] = {
 	&hispeed_freq.attr,
 	&rtg_boost_freq.attr,
 	&pl.attr,
-	&iowait_boost_enable.attr,
+	&able.attr,
 	NULL
 };
 
@@ -1100,7 +1100,7 @@ static int sugov_init(struct cpufreq_policy *policy)
 	tunables->down_rate_limit_us =
 				cpufreq_policy_transition_delay_us(policy);
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
-	tunables->hispeed_freq = 0;
+	tunables->hispeed_freq = 2016000;
 
 	switch (policy->cpu) {
 	default:
@@ -1115,20 +1115,18 @@ static int sugov_init(struct cpufreq_policy *policy)
 		break;
 	}
 	
-	tunables->iowait_boost_enable = false;
+	tunables->iowait_boost_enable = enable;
 
 	if (cpumask_test_cpu(policy->cpu, cpu_prime_mask)) {
 		tunables->up_rate_limit_us =
 					CONFIG_SCHEDUTIL_UP_RATE_LIMIT_PRIME;
-		tunables->down_rate_limit_us =
-					CONFIG_SCHEDUTIL_DOWN_RATE_LIMIT_PRIME;
+		tunables->down_rate_limit_us = 80000;
 	}
 
 	if (cpumask_test_cpu(policy->cpu, cpu_perf_mask)) {
 		tunables->up_rate_limit_us =
 					CONFIG_SCHEDUTIL_UP_RATE_LIMIT_BIG;
-		tunables->down_rate_limit_us =
-					CONFIG_SCHEDUTIL_DOWN_RATE_LIMIT_BIG;
+		tunables->down_rate_limit_us = 80000;
 	}
 
 	if (cpumask_test_cpu(policy->cpu, cpu_lp_mask)) {
