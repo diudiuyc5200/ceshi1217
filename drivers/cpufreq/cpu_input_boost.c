@@ -22,9 +22,12 @@
 /* 添加 kp_active_mode 函数声明 */
 int kp_active_mode(void);
 
-static unsigned int input_boost_freq_little __read_mostly = 1708800;
-static unsigned int input_boost_freq_big __read_mostly = 2016000;
-static unsigned int input_boost_freq_prime __read_mostly = 2016000;
+static unsigned int input_boost_freq_little __read_mostly =
+	CONFIG_INPUT_BOOST_FREQ_LP;
+static unsigned int input_boost_freq_big __read_mostly =
+	CONFIG_INPUT_BOOST_FREQ_PERF;
+static unsigned int input_boost_freq_prime __read_mostly =
+	CONFIG_INPUT_BOOST_FREQ_PERFP;
 static unsigned int max_boost_freq_little __read_mostly =
 	CONFIG_MAX_BOOST_FREQ_LP;
 static unsigned int max_boost_freq_big __read_mostly =
@@ -45,9 +48,9 @@ static unsigned short input_boost_duration __read_mostly =
 static unsigned short wake_boost_duration __read_mostly =
 	CONFIG_WAKE_BOOST_DURATION_MS;
 
-module_param(input_boost_freq_little, uint, 0444);
-module_param(input_boost_freq_big, uint, 0444);
-module_param(input_boost_freq_prime, uint, 0444);
+module_param(input_boost_freq_little, uint, 0644);
+module_param(input_boost_freq_big, uint, 0644);
+module_param(input_boost_freq_prime, uint, 0644);
 module_param(max_boost_freq_little, uint, 0644);
 module_param(max_boost_freq_big, uint, 0644);
 module_param(max_boost_freq_prime, uint, 0644);
@@ -56,7 +59,7 @@ module_param(cpu_freq_min_big, uint, 0644);
 module_param(cpu_freq_min_prime, uint, 0644);
 module_param(cpu_freq_idle_little, uint, 0644);
 
-module_param(input_boost_duration, short, 0444);
+module_param(input_boost_duration, short, 0644);
 module_param(wake_boost_duration, short, 0644);
 
 unsigned long last_input_time;
@@ -94,11 +97,11 @@ static unsigned int get_input_boost_freq(struct cpufreq_policy *policy)
 	unsigned int freq;
 
 	if (cpumask_test_cpu(policy->cpu, cpu_lp_mask))
-		freq = 1708800;
+		freq = input_boost_freq_little;
 	else if (cpumask_test_cpu(policy->cpu, cpu_perf_mask))
-		freq = 2016000;
+		freq = input_boost_freq_big;
 	else
-		freq = 2016000;
+		freq = input_boost_freq_prime;
 	return min(freq, policy->max);
 }
 
