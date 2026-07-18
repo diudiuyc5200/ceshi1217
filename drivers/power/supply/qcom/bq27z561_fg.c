@@ -255,6 +255,8 @@ static int calc_delta_time(struct timeval *time_stamp, int *delta_time);
 
 /* ===== 添加函数声明 ===== */
 static int fg_read_volt(struct bq_fg_chip *bq);
+static int fg_read_fcc(struct bq_fg_chip *bq);
+static int fg_read_rm(struct bq_fg_chip *bq);
 /* ===== 函数声明结束 ===== */
 
 /*
