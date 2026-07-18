@@ -746,18 +746,19 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     int last_soc = bq->last_soc;
     int last_volt = bq->last_volt;
     int rm, fcc;
+    ktime_t now, delta;
+    s64 charge_ms;
 
     /* 调试fake电量优先返回 */
     if (bq->fake_soc > 0)
         return bq->fake_soc;
 
-    /* 1. 读取电池电压，异常使用上次有效值兜底 */
+    /* 1. 读取电压，异常兜底 */
     volt = fg_read_volt(bq);
     if (volt < 0) {
         volt = last_volt;
         bq_dbg(PR_OEM, "voltage read failed, fallback last=%dmV\n", last_volt);
     }
-    /* 电压合法区间裁剪，过滤异常值 */
     if (volt < 3000 || volt > 4450) {
         bq_dbg(PR_OEM, "volt %dmV out of range, use last %dmV\n", volt, last_volt);
         volt = last_volt;
@@ -767,7 +768,6 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     /* 2. 读取电流，防抖判定充电状态 */
     ret = fg_read_current(bq, &curr);
     if (ret == 0) {
-        /* 充电判定：充电电流 > 100mA，连续3帧稳定才判定充电 */
         if (curr > 100) {
             bq->charge_stable_count++;
             if (bq->charge_stable_count >= 3)
@@ -775,39 +775,33 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
             else
                 is_charging = bq->is_charging;
         } else if (curr < 30) {
-            /* 电流接近0，判定停止充电，清空防抖计数 */
             bq->charge_stable_count = 0;
             is_charging = false;
         } else {
-            /* 微小电流维持原有充电状态，防止频繁切换 */
             is_charging = bq->is_charging;
         }
     } else {
-        /* 电流读取失败，沿用历史充电状态 */
         is_charging = bq->is_charging;
     }
 
-    /* 3. 读取BQ芯片原生剩余容量/满充容量，计算真实raw_soc（核心修复点） */
+    /* 3. 获取BQ原生容量SOC（唯一可信充电电量来源） */
     rm = fg_read_rm(bq);
     fcc = fg_read_fcc(bq);
     if (fcc > 0 && rm >= 0) {
         raw_soc = rm * 100 / fcc;
-        raw_soc = clamp(raw_soc, 0, 100);
+        raw_soc = raw_soc < 0 ? 0 : (raw_soc > 100 ? 100 : raw_soc);
     } else {
-        raw_soc = -1; /* 标记容量读取失败，仅用电压计算 */
+        raw_soc = -1;
     }
-
-    /* 电压查表计算SOC */
     volt_soc = fg_voltage_to_soc(volt);
 
-    /* ===== 充电分支：电压虚高，降低电压权重，以芯片原始容量为主 ===== */
+    /* ===================== 充电分支：彻底禁用电压SOC ===================== */
     if (is_charging) {
-        ktime_t now = ktime_get();
+        now = ktime_get();
         int temp = fg_read_temperature(bq);
 
-        /* 高温锁电量：>=50℃禁止SOC上涨 */
+        /* 高温锁定电量，完全不涨 */
         if (temp >= 500) {
-            bq_dbg(PR_OEM, "HIGH TEMP LOCK SOC temp=%.1f℃ hold soc=%d\n", temp/10.0f, last_soc);
             bq->last_soc = last_soc;
             bq->batt_volt = volt;
             bq->batt_curr = curr;
@@ -815,53 +809,63 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
             return last_soc;
         }
 
-        /* 首次进入充电，记录充电起始信息 */
+        /* 首次充电，记录起始时间与SOC */
         if (!bq->is_charging) {
             bq->charge_start_time = now;
             bq->charge_start_soc = last_soc;
             bq->is_charging = true;
-            bq_dbg(PR_OEM, "CHARGE START volt=%d curr=%d last_soc=%d\n", volt, curr, last_soc);
+            bq_dbg(PR_OEM, "CHARGE START volt=%d curr=%d start_soc=%d\n", volt, curr, last_soc);
         }
 
-        /* 融合计算：充电时电压可信度低，权重分配 raw_soc 70% + volt_soc 30% */
-        if (raw_soc >= 0) {
-            final_soc = (raw_soc * 7 + volt_soc * 3) / 10;
+        /* 计算充电时长，前3秒禁止电量上涨，过滤插电瞬间高压跳变 */
+        delta = ktime_sub(now, bq->charge_start_time);
+        charge_ms = ktime_to_ms(delta);
+        if (charge_ms < 3000) {
+            final_soc = last_soc;
+            bq_dbg(PR_OEM, "charging warmup 3s, hold soc %d\n", final_soc);
         } else {
-            /* 容量读取异常，仅使用电压，强制最高97%，防止冲100% */
-            final_soc = volt_soc;
+            /* 充电阶段：完全丢弃volt_soc，只使用BQ库仑计raw_soc */
+            if (raw_soc >= 0) {
+                final_soc = raw_soc;
+            } else {
+                /* 容量读取异常兜底，强制压低上限90，防止电压乱飞 */
+                final_soc = volt_soc;
+                if (final_soc > 90)
+                    final_soc = 90;
+            }
         }
 
-        /* 充电平滑限制：单次最大上涨2%，防止电压突升跳电 */
-        if (final_soc > last_soc + 2)
-            final_soc = last_soc + 2;
+        /* 充电单次最多上涨1%，抑制暴涨 */
+        if (final_soc > last_soc + 1)
+            final_soc = last_soc + 1;
         if (final_soc < last_soc - 3)
             final_soc = last_soc - 3;
 
-        /* 充电上限钳位：最高97%，杜绝电压虚高直接100% */
-        final_soc = min(final_soc, 97);
+        /* 硬上限95，永远到不了100 */
+        if (final_soc > 95)
+            final_soc = 95;
 
-        bq_dbg(PR_OEM, "CHARGE: volt_soc=%d raw_soc=%d final=%d volt=%d curr=%d\n",
-               volt_soc, raw_soc, final_soc, volt, curr);
+        bq_dbg(PR_OEM, "CHARGE_ONLY_RAW: raw_soc=%d final=%d volt=%d curr=%d\n",
+               raw_soc, final_soc, volt, curr);
     }
-    /* ===== 放电/静置分支：电芯电压可信，电压权重拉高 ===== */
+    /* ===================== 放电/静置分支：电压正常参与修正 ===================== */
     else {
-        /* 退出充电，清空充电状态标记 */
         if (bq->is_charging) {
             bq_dbg(PR_OEM, "CHARGE STOP last_soc=%d\n", last_soc);
             bq->is_charging = false;
             bq->charge_stable_count = 0;
         }
 
-        /* 放电静置：电芯电压真实，权重 raw_soc 30% + volt_soc 70% */
+        /* 放电无充电电流，电芯电压真实，电压为主、库仑计为辅 */
         if (raw_soc >= 0) {
             final_soc = (raw_soc * 3 + volt_soc * 7) / 10;
         } else {
             final_soc = volt_soc;
         }
 
-        /* 放电防抖：电压波动跳高限制5%，下跌限制3% */
+        /* 放电波动限制 */
         if (final_soc > last_soc + 5) {
-            bq_dbg(PR_OEM, "DISCHARGE SOC JUMP filter %d->%d\n", last_soc, final_soc);
+            bq_dbg(PR_OEM, "DISCHARGE JUMP FILTER %d->%d\n", last_soc, final_soc);
             final_soc = last_soc;
         }
         if (final_soc > last_soc + 3)
@@ -869,17 +873,15 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         if (final_soc < last_soc - 3)
             final_soc = last_soc - 3;
 
-        bq_dbg(PR_OEM, "DISCHARGE: volt_soc=%d raw_soc=%d final=%d volt=%d curr=%d\n",
-               volt_soc, raw_soc, final_soc, volt, curr);
+        bq_dbg(PR_OEM, "DISCHARGE: volt_soc=%d raw_soc=%d final=%d volt=%d\n",
+               volt_soc, raw_soc, final_soc, volt);
     }
 
     /* 全局边界保护 */
-    final_soc = clamp(final_soc, 0, 100);
-    /* 低压兜底，低于3500mV最低显示5%，避免0%误报 */
+    final_soc = final_soc < 0 ? 0 : (final_soc > 100 ? 100 : final_soc);
     if (final_soc < 5 && volt > 3500)
         final_soc = 5;
 
-    /* 更新全局缓存变量 */
     bq->last_soc = final_soc;
     bq->batt_volt = volt;
     bq->batt_curr = curr;
