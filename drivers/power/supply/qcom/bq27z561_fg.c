@@ -15,7 +15,6 @@
  */
 #define pr_fmt(fmt)    "[bq27z561] %s: " fmt, __func__
 #include <linux/module.h>
-#include <linux/kernel.h>
 #include <linux/param.h>
 #include <linux/jiffies.h>
 #include <linux/workqueue.h>
@@ -255,8 +254,6 @@ static int calc_delta_time(struct timeval *time_stamp, int *delta_time);
 
 /* ===== 添加函数声明 ===== */
 static int fg_read_volt(struct bq_fg_chip *bq);
-static int fg_read_fcc(struct bq_fg_chip *bq);
-static int fg_read_rm(struct bq_fg_chip *bq);
 /* ===== 函数声明结束 ===== */
 
 /*
@@ -733,46 +730,47 @@ static int fg_voltage_to_soc(int voltage)
 }
 /* ===== 电压估算结束 ===== */
 
-/* ===== 重写优化版 fg_read_rsoc：解决充电电压虚高SOC暴涨问题 ===== */
+/* ===== fg_read_rsoc：电压估算 + 时间驱动充电（完整版） ===== */
 static int fg_read_rsoc(struct bq_fg_chip *bq)
 {
     int volt;
-    int volt_soc = 0;
-    int raw_soc = 0;
-    int final_soc = 0;
+    int soc;
     int curr;
     bool is_charging;
     int ret;
     int last_soc = bq->last_soc;
     int last_volt = bq->last_volt;
-    int rm, fcc;
-    bool full_capacity = false;
 
-    /* 调试假电量优先返回 */
     if (bq->fake_soc > 0)
         return bq->fake_soc;
 
-    /* 读取电压，异常值兜底 */
+    /* ===== 1. 读取电压（带有效性检查） ===== */
     volt = fg_read_volt(bq);
     if (volt < 0) {
         volt = last_volt;
-        bq_dbg(PR_OEM, "voltage read failed, fallback last=%dmV\n", last_volt);
+        bq_dbg(PR_OEM, "voltage read failed, using last=%d\n", last_volt);
     }
-    if (volt < 3000 || volt > 4450) {
-        bq_dbg(PR_OEM, "volt %dmV out of range, use last %dmV\n", volt, last_volt);
+
+    /* 锂电池正常工作电压范围：3.0V ~ 4.45V */
+    if (volt < 3000) {
+        bq_dbg(PR_OEM, "volt=%d below 3000mV, using last=%d\n", volt, last_volt);
+        volt = last_volt;
+    } else if (volt > 4450) {
+        bq_dbg(PR_OEM, "volt=%d above 4450mV, using last=%d\n", volt, last_volt);
         volt = last_volt;
     }
-    bq->last_volt = volt;
+    last_volt = volt;
 
-    /* 电流极性已修正：负值为充电，正值为放电 */
+    /* ===== 2. 检测充电状态（带去抖动，适配大电流快充） ===== */
     ret = fg_read_current(bq, &curr);
     if (ret == 0) {
         if (curr < -100) {
             bq->charge_stable_count++;
-            if (bq->charge_stable_count >= 3)
+            if (bq->charge_stable_count >= 3) {
                 is_charging = true;
-            else
+            } else {
                 is_charging = bq->is_charging;
+            }
         } else if (curr > 30) {
             bq->charge_stable_count = 0;
             is_charging = false;
@@ -783,104 +781,84 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         is_charging = bq->is_charging;
     }
 
-    /* 读取BQ原始容量数据 */
-    rm = fg_read_rm(bq);
-    fcc = fg_read_fcc(bq);
-    if (fcc > 0 && rm >= 0) {
-        raw_soc = rm * 100 / fcc;
-        raw_soc = raw_soc < 0 ? 0 : (raw_soc > 100 ? 100 : raw_soc);
-        if (rm >= fcc)
-            full_capacity = true;
-    } else {
-        raw_soc = -1;
-    }
-    volt_soc = fg_voltage_to_soc(volt);
-
-    /* ===================== 充电分支：使用BQ原生电量，仅封顶 ===================== */
+    /* ===== 3. 充电状态：纯电压换算SOC，45℃高温停充 ===== */
     if (is_charging) {
+        ktime_t now = ktime_get();
+        // 高温45℃锁定电量，停止上涨
         int temp = fg_read_temperature(bq);
-
-        /* 高温锁定当前电量，禁止上涨 */
         if (temp >= 500) {
+            bq_dbg(PR_OEM, "HIGH TEMP STOP CHARGE, temp=%d (%.1f℃), hold soc=%d\n", temp, temp/10.0f, last_soc);
             bq->last_soc = last_soc;
+            bq->last_volt = volt;
             bq->batt_volt = volt;
             bq->batt_curr = curr;
-            bq->is_charging = true;
             return last_soc;
         }
 
-        /* 刚切入充电状态标记 */
         if (!bq->is_charging) {
+            bq->charge_start_time = now;
             bq->is_charging = true;
-            bq_dbg(PR_OEM, "CHARGE START, use BQ native FG logic\n");
+            bq_dbg(PR_OEM, "CHARGING START, volt=%d, curr=%d\n", volt, curr);
         }
 
-        /* 完全采用BQ芯片自身计算的raw_soc，不混入电压SOC */
-        final_soc = raw_soc;
+        // 充电完全使用电压查表，和放电逻辑统一
+        soc = fg_voltage_to_soc(volt);
 
-        /* 平滑步长控制，避免电量跳变过大 */
-        if (final_soc > last_soc + 1)
-            final_soc = last_soc + 1;
-        if (final_soc < last_soc - 3)
-            final_soc = last_soc - 3;
+        // 平滑防抖，电压小幅波动不会跳电量
+        if (soc > last_soc + 3)
+            soc = last_soc + 3;
+        if (soc < last_soc - 3)
+            soc = last_soc - 3;
+        if (soc > 98)
+            soc = 98;
 
-        /* 强制充电最高上限95%，屏蔽100%显示 */
-        if (final_soc > 98)
-            final_soc = 98;
-
-        bq_dbg(PR_OEM, "CHARGE BQ_NATIVE: raw_soc=%d final=%d volt=%d curr=%d\n",
-               raw_soc, final_soc, volt, curr);
-    }
-    /* ===================== 放电分支：保留电压查表为主的逻辑 ===================== */
-    else {
-        if (bq->is_charging) {
-            bq_dbg(PR_OEM, "CHARGE STOP, switch to voltage-based soc\n");
-            bq->is_charging = false;
-            bq->charge_stable_count = 0;
+        if (soc >= last_soc + 5) {
+            bq_dbg(PR_OEM, "CHARGING_VOLT_BASED: volt=%d, soc=%d%%, curr=%d\n", volt, soc, curr);
         }
 
-        int volt_weight = 7;
-        int raw_weight = 3;
-        /* 高压静置时降低电压权重，防止满电压强行顶到满电 */
-        if (volt >= 4280) {
-            volt_weight = 2;
-            raw_weight = 8;
-        }
-
-        if (raw_soc >= 0) {
-            final_soc = (raw_soc * raw_weight + volt_soc * volt_weight) / 10;
-        } else {
-            final_soc = volt_soc;
-        }
-
-        /* 容量已满时，放电阶段最高锁90%，避免拔电跳100 */
-        if (full_capacity && final_soc > 98) {
-            final_soc = 98;
-        }
-
-        /* 电量跳变过滤 */
-        if ((final_soc - last_soc) > 5) {
-            bq_dbg(PR_OEM, "DISCHARGE SOC JUMP filter %d->%d\n", last_soc, final_soc);
-            final_soc = last_soc;
-        } else if ((final_soc - last_soc) > 3) {
-            final_soc = last_soc + 3;
-        } else if ((last_soc - final_soc) > 3) {
-            final_soc = last_soc - 3;
-        }
-
-        bq_dbg(PR_OEM, "DISCHARGE VOLT_BASE: volt_soc=%d raw_soc=%d final=%d volt=%d\n",
-               volt_soc, raw_soc, final_soc, volt);
+        bq->batt_volt = volt;
+        bq->batt_curr = curr;
+        bq->last_soc = soc;
+        bq->last_volt = volt;
+        return soc;
     }
 
-    /* 全局边界保护 */
-    final_soc = final_soc < 0 ? 0 : (final_soc > 100 ? 100 : final_soc);
-    if (final_soc < 5 && volt > 3500)
-        final_soc = 5;
+    /* ===== 4. 放电/空闲状态：电压估算 SOC ===== */
+    if (bq->is_charging) {
+        bq_dbg(PR_OEM, "CHARGING STOPPED: final_soc=%d\n", last_soc);
+        bq->is_charging = false;
+        bq->charge_start_time = ktime_get();
+        bq->charge_stable_count = 0;
+    }
 
-    bq->last_soc = final_soc;
+    soc = fg_voltage_to_soc(volt);
+    /* 放电时防止异常跳高（电压波动） */
+    if (soc > last_soc + 10) {
+        bq_dbg(PR_OEM, "DISCHARGE: soc jump %d->%d, using last\n", last_soc, soc);
+        soc = last_soc;
+    }
+    /* 放电平滑限制 */
+    if (soc > last_soc + 3)
+        soc = last_soc + 3;
+    if (soc < last_soc - 3)
+        soc = last_soc - 1;
+
+    if (soc >= last_soc + 5 || soc <= last_soc - 5) {
+        bq_dbg(PR_OEM, "DISCHARGE: volt=%d, soc=%d%%, curr=%d\n",
+               volt, soc, curr);
+    }
+
+    /* ===== 5. 边界保护 ===== */
+    if (soc < 5)
+        soc = 5;
+    if (soc > 100)
+        soc = 100;
+
+    bq->last_soc = soc;
+    bq->last_volt = volt;
     bq->batt_volt = volt;
     bq->batt_curr = curr;
-    return final_soc;
+    return soc;
 }
 /* ===== fg_read_rsoc 结束 ===== */
 
