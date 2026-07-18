@@ -1115,7 +1115,7 @@ static int sugov_init(struct cpufreq_policy *policy)
 		break;
 	}
 	
-	tunables->iowait_boost_enable = enable;
+	tunables->iowait_boost_enable = true;
 
 	if (cpumask_test_cpu(policy->cpu, cpu_prime_mask)) {
 		tunables->up_rate_limit_us =
