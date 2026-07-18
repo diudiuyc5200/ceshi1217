@@ -746,15 +746,13 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     int last_soc = bq->last_soc;
     int last_volt = bq->last_volt;
     int rm, fcc;
-    ktime_t now, delta;
-    s64 charge_ms;
     bool full_capacity = false;
 
-    /* 调试fake电量优先返回 */
+    /* 调试假电量优先返回 */
     if (bq->fake_soc > 0)
         return bq->fake_soc;
 
-    /* 1. 读取电压，异常兜底 */
+    /* 读取电压，异常值兜底 */
     volt = fg_read_volt(bq);
     if (volt < 0) {
         volt = last_volt;
@@ -766,30 +764,26 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     }
     bq->last_volt = volt;
 
-    /* 2. 【关键修复】电流极性反转：负值是充电，正值是放电 */
+    /* 电流极性已修正：负值为充电，正值为放电 */
     ret = fg_read_current(bq, &curr);
     if (ret == 0) {
-        /* 充电：电流小于 -100mA */
         if (curr < -100) {
             bq->charge_stable_count++;
             if (bq->charge_stable_count >= 3)
                 is_charging = true;
             else
                 is_charging = bq->is_charging;
-        }
-        /* 电流大于+30mA，判定为放电，退出充电状态 */
-        else if (curr > 30) {
+        } else if (curr > 30) {
             bq->charge_stable_count = 0;
             is_charging = false;
         } else {
-            /* 微小电流维持原有状态 */
             is_charging = bq->is_charging;
         }
     } else {
         is_charging = bq->is_charging;
     }
 
-    /* 3. 获取BQ原生容量SOC */
+    /* 读取BQ原始容量数据 */
     rm = fg_read_rm(bq);
     fcc = fg_read_fcc(bq);
     if (fcc > 0 && rm >= 0) {
@@ -802,11 +796,11 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     }
     volt_soc = fg_voltage_to_soc(volt);
 
-    /* ===================== 充电分支：彻底禁用电压SOC ===================== */
+    /* ===================== 充电分支：使用BQ原生电量，仅封顶 ===================== */
     if (is_charging) {
-        now = ktime_get();
         int temp = fg_read_temperature(bq);
 
+        /* 高温锁定当前电量，禁止上涨 */
         if (temp >= 500) {
             bq->last_soc = last_soc;
             bq->batt_volt = volt;
@@ -815,51 +809,39 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
             return last_soc;
         }
 
+        /* 刚切入充电状态标记 */
         if (!bq->is_charging) {
-            bq->charge_start_time = now;
-            bq->charge_start_soc = last_soc;
             bq->is_charging = true;
-            bq_dbg(PR_OEM, "CHARGE START volt=%d curr=%d start_soc=%d\n", volt, curr, last_soc);
+            bq_dbg(PR_OEM, "CHARGE START, use BQ native FG logic\n");
         }
 
-        delta = ktime_sub(now, bq->charge_start_time);
-        charge_ms = ktime_to_ms(delta);
-        if (charge_ms < 3000) {
-            final_soc = last_soc;
-        } else {
-            if (raw_soc >= 0) {
-                final_soc = raw_soc;
-            } else {
-                final_soc = volt_soc;
-                if (final_soc > 90)
-                    final_soc = 90;
-            }
-        }
+        /* 完全采用BQ芯片自身计算的raw_soc，不混入电压SOC */
+        final_soc = raw_soc;
 
-        /* 单次最多涨1%，抑制暴涨 */
+        /* 平滑步长控制，避免电量跳变过大 */
         if (final_soc > last_soc + 1)
             final_soc = last_soc + 1;
         if (final_soc < last_soc - 3)
             final_soc = last_soc - 3;
 
-        /* 充电硬上限95%，杜绝100% */
-        if (final_soc > 95)
-            final_soc = 95;
+        /* 强制充电最高上限95%，屏蔽100%显示 */
+        if (final_soc > 98)
+            final_soc = 98;
 
-        bq_dbg(PR_OEM, "CHARGE_ONLY_RAW: raw_soc=%d final=%d volt=%d curr=%d\n",
+        bq_dbg(PR_OEM, "CHARGE BQ_NATIVE: raw_soc=%d final=%d volt=%d curr=%d\n",
                raw_soc, final_soc, volt, curr);
     }
-    /* ===================== 放电/静置分支 ===================== */
+    /* ===================== 放电分支：保留电压查表为主的逻辑 ===================== */
     else {
         if (bq->is_charging) {
-            bq_dbg(PR_OEM, "CHARGE STOP last_soc=%d\n", last_soc);
+            bq_dbg(PR_OEM, "CHARGE STOP, switch to voltage-based soc\n");
             bq->is_charging = false;
             bq->charge_stable_count = 0;
         }
 
         int volt_weight = 7;
         int raw_weight = 3;
-        /* 高压静置时，削弱电压权重，防止满电压强行顶满电量 */
+        /* 高压静置时降低电压权重，防止满电压强行顶到满电 */
         if (volt >= 4280) {
             volt_weight = 2;
             raw_weight = 8;
@@ -871,12 +853,12 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
             final_soc = volt_soc;
         }
 
-        /* 库仑计已满容，放电阶段最高锁定90% */
-        if (full_capacity && final_soc > 90) {
-            final_soc = 90;
+        /* 容量已满时，放电阶段最高锁90%，避免拔电跳100 */
+        if (full_capacity && final_soc > 98) {
+            final_soc = 98;
         }
 
-        /* 跳变过滤，减少刷屏日志 */
+        /* 电量跳变过滤 */
         if ((final_soc - last_soc) > 5) {
             bq_dbg(PR_OEM, "DISCHARGE SOC JUMP filter %d->%d\n", last_soc, final_soc);
             final_soc = last_soc;
@@ -886,7 +868,7 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
             final_soc = last_soc - 3;
         }
 
-        bq_dbg(PR_OEM, "DISCHARGE: volt_soc=%d raw_soc=%d final=%d volt=%d\n",
+        bq_dbg(PR_OEM, "DISCHARGE VOLT_BASE: volt_soc=%d raw_soc=%d final=%d volt=%d\n",
                volt_soc, raw_soc, final_soc, volt);
     }
 
