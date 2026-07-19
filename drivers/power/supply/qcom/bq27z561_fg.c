@@ -290,6 +290,9 @@ static int fg_read_current(struct bq_fg_chip *bq, int *curr);
 static int fg_read_temperature(struct bq_fg_chip *bq);
 static int calc_delta_time(struct timeval *time_stamp, int *delta_time);
 static int fg_read_volt(struct bq_fg_chip *bq);
+/* 电压滤波和负载补偿函数声明 */
+static int fg_filter_voltage(struct bq_fg_chip *bq, int raw_volt);
+static int fg_compensate_voltage(struct bq_fg_chip *bq, int volt, int curr);
 /*
 static int __fg_read_byte(struct i2c_client *client, u8 reg, u8 *val)
 {
@@ -968,7 +971,7 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         elapsed_sec = (int)ktime_to_ms(elapsed) / 1000;
 
         /* 充电速度：每 36 秒增加 1% */
-        soc_increment = elapsed_sec / 36;
+        soc_increment = elapsed_sec / 72;
         soc = bq->charge_start_soc + soc_increment;
 
         /* 限制最高 95% */
