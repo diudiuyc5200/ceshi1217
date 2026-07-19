@@ -231,9 +231,9 @@ qcom,disable-batt-low-shutdown;   /* 禁用低电关机 */
 	qcom,battery-data = <&mtp_batterydata>;
 	qcom,rapid-soc-dec-en;
 	qcom,fg-sys-term-current = <(-300)>;
-	qcom,fg-cutoff-voltage = <3000>;
+	qcom,fg-cutoff-voltage = <3400>;
 	qcom,fg-cutoff-current = <100>;
-	qcom,fg-empty-voltage = <2800>;
+	qcom,fg-empty-voltage = <3200>;
 	qcom,fg-batt-temp-delta = <6>;
 	qcom,fg-force-load-profile;
 	/* ESR fast calibration */
@@ -273,9 +273,7 @@ qcom,disable-batt-low-shutdown;   /* 禁用低电关机 */
 	qcom,fcc-max-ua = <9000000>;
 	qcom,fv-max-uv = <4480000>;
 	qcom,dc-icl-ua = <500000>;
-	qcom,auto-recharge-vbat-mv = <4380>;
-	qcom,step-charging-enable;
-	qcom,sw-jeita-enable;
+	qcom,auto-recharge-vbat-mv = <4350>;
 	qcom,chg-term-src = <1>;
 	qcom,chg-term-current-ma = <(-220)>;
 	qcom,chg-term-base-current-ma = <50>;
@@ -399,7 +397,7 @@ qcom,disable-batt-low-shutdown;   /* 禁用低电关机 */
 &pm8150b_pdphy {
 	vbus-supply = <&ext_5v_boost>;
 	mi,pd_curr_limit = <1>;
-	mi,pd_max_curr_limit = <4000000>;
+	mi,pd_max_curr_limit = <8000000>;
 };
 
 &usb0 {
@@ -709,7 +707,7 @@ qcom,disable-batt-low-shutdown;   /* 禁用低电关机 */
 		compatible = "ti,bq27z561";
 		reg = <0x55>;
 		bq,charge-full-design = <4000000>;
-		bq,recharge-voltage   = <4380>;
+		bq,recharge-voltage   = <4350>;
 		bq,shutdown-delay-enable;
 		bq,soc_decimal_rate = <
 			0  38

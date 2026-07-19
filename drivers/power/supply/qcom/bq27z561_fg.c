@@ -779,12 +779,14 @@ static int fg_read_rm(struct bq_fg_chip *bq)
         return ret;
     }
 
-    /* ===== 新增：如果启用了自定义容量，按比例缩放 RM ===== */
+    /* ===== 按比例缩放 RM ===== */
     if (bq->charge_full_override && bq->custom_charge_full > 0) {
-        int original_fcc = 4000;  /* 原装电池容量（mAh），可从设备树或硬编码 */
+        int original_fcc = bq->batt_dc / 1000;  /* 从设备树读取，转成 mAh */
         int new_fcc = bq->custom_charge_full / 1000;
-        /* 按比例缩放：新RM = 旧RM * (新FCC / 原FCC) */
-        rm = rm * new_fcc / original_fcc;
+
+        if (original_fcc > 0) {
+            rm = rm * new_fcc / original_fcc;
+        }
     }
     /* ===== 新增结束 ===== */
 
@@ -1144,7 +1146,7 @@ static int fg_get_property(struct power_supply *psy, enum power_supply_property 
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		if (bq->old_hw) {
-			val->intval = 4450000;
+			val->intval = 4400000;
 			break;
 		}
 		val->intval = fg_read_charging_voltage(bq);
