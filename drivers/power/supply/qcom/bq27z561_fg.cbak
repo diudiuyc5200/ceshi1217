@@ -764,14 +764,14 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     /* ===== 2. 检测充电状态（带去抖动，适配大电流快充） ===== */
     ret = fg_read_current(bq, &curr);
     if (ret == 0) {
-        if (curr > 100) {
+        if (curr < -100) {
             bq->charge_stable_count++;
             if (bq->charge_stable_count >= 3) {
                 is_charging = true;
             } else {
                 is_charging = bq->is_charging;
             }
-        } else if (curr < 30) {
+        } else if (curr > 30) {
             bq->charge_stable_count = 0;
             is_charging = false;
         } else {
@@ -809,8 +809,8 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
             soc = last_soc + 3;
         if (soc < last_soc - 3)
             soc = last_soc - 3;
-        if (soc > 95)
-            soc = 95;
+        if (soc > 98)
+            soc = 98;
 
         if (soc >= last_soc + 5) {
             bq_dbg(PR_OEM, "CHARGING_VOLT_BASED: volt=%d, soc=%d%%, curr=%d\n", volt, soc, curr);
@@ -841,7 +841,7 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     if (soc > last_soc + 3)
         soc = last_soc + 3;
     if (soc < last_soc - 3)
-        soc = last_soc - 3;
+        soc = last_soc - 1;
 
     if (soc >= last_soc + 5 || soc <= last_soc - 5) {
         bq_dbg(PR_OEM, "DISCHARGE: volt=%d, soc=%d%%, curr=%d\n",
