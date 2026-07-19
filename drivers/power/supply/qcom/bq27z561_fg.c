@@ -887,8 +887,8 @@ static int fg_voltage_to_soc(int voltage)
 
 static int fg_read_rsoc(struct bq_fg_chip *bq)
 {
-    static int last_soc = 50;
-    static int last_volt = 3700;
+    static int last_soc = 80;
+    static int last_volt = 4000;
     int volt;
     int soc;
     int curr;
@@ -975,8 +975,8 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         soc = bq->charge_start_soc + soc_increment;
 
         /* 限制最高 95% */
-        if (soc > 95)
-            soc = 95;
+        if (soc > 99)
+            soc = 99;
 
         /* 充电时 SOC 只增不减 */
         if (soc < bq->charge_start_soc)
@@ -1034,10 +1034,10 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
 
     /* ===== 9. 平滑变化，防止跳变 ===== */
     /* 每次最多变化 3% */
-    if (soc > last_soc + 3)
-        soc = last_soc + 3;
-    if (soc < last_soc - 3)
-        soc = last_soc - 3;
+    if (soc > last_soc + 1)
+        soc = last_soc + 1;
+    if (soc < last_soc - 1)
+        soc = last_soc - 1;
 
     /* 异常跳变超过 10% 则丢弃 */
     if (soc > last_soc + 10) {
@@ -1117,7 +1117,7 @@ static int fg_read_volt(struct bq_fg_chip *bq)
 	ret = fg_read_word(bq, bq->regs[BQ_FG_REG_VOLT], &volt);
 	if (ret < 0) {
 		bq_dbg(PR_OEM, "could not read voltage, ret = %d\n", ret);
-		return 3700;
+		return 4000;
 	}
 
 	return volt;
@@ -1493,7 +1493,7 @@ static int fg_get_property(struct power_supply *psy, enum power_supply_property 
 			break;
 		}
 		if (bq->old_hw) {
-			val->intval = 3700 * 1000;
+			val->intval = 4000 * 1000;
 			break;
 		}
 		ret = fg_read_volt(bq);
@@ -1516,7 +1516,7 @@ static int fg_get_property(struct power_supply *psy, enum power_supply_property 
 
 	case POWER_SUPPLY_PROP_CAPACITY:
 		if (bq->old_hw) {
-			val->intval = 50;
+			val->intval = 80;
 			break;
 		}
 		bq->batt_volt = fg_read_volt(bq);
@@ -2364,13 +2364,13 @@ bq->custom_charge_full = 0;
 bq->charge_full_override = false;
 bq->custom_charge_full_design = 0;
 bq->charge_full_design_override = false;
-bq->filtered_volt = 3700;
+bq->filtered_volt = 4000;
 bq->charge_stop_soc = 0;
 bq->charge_stop_time = 0;
 bq->charge_start_time = 0;
-bq->charge_start_soc = 50;
+bq->charge_start_soc = 80;
 bq->is_charging = false;
-bq->last_charge_report_soc = 50;
+bq->last_charge_report_soc = 80;
 bq->charge_stable_count = 0;
 
 	if (bq->chip == BQ27Z561) {
