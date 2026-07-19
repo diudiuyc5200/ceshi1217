@@ -260,6 +260,12 @@ struct bq_fg_chip {
 	int	cold_thermal_len;
 	bool	update_now;
 	bool	fast_mode;
+	 /* ===== 电压滤波 ===== */
+    int filtered_volt;             /* 滤波后的电压值 */
+    
+    /* ===== 充电状态过渡 ===== */
+    int charge_stop_soc;           /* 充电停止时的 SOC */
+    ktime_t charge_stop_time;      /* 充电停止的时间 */
 	/* ===== 充电追踪变量 ===== */
     ktime_t charge_start_time;
     int charge_start_soc;
@@ -885,11 +891,12 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     int curr;
     bool is_charging;
     int ret;
+    int filtered_volt;
 
     if (bq->fake_soc > 0)
         return bq->fake_soc;
 
-    /* 1. 读取电压 */
+    /* ===== 1. 读取原始电压 ===== */
     volt = fg_read_volt(bq);
     if (volt < 0) {
         volt = last_volt;
@@ -906,29 +913,39 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     }
     last_volt = volt;
 
-    /* 2. 读取电流，判断是否在充电（修正符号逻辑） */
+    /* ===== 2. 读取电流 ===== */
     ret = fg_read_current(bq, &curr);
-    if (ret == 0) {
-        /* 修正：curr < 0 表示充电，curr > 0 表示放电 */
-        if (curr < -150) {  /* 充电电流 < -150mA */
-            bq->charge_stable_count++;
-            if (bq->charge_stable_count >= 3) {
-                is_charging = true;
-            } else {
-                is_charging = bq->is_charging;
-            }
-        } else if (curr > -50) {  /* 电流 > -50mA，接近0或放电，停止充电 */
-            bq->charge_stable_count = 0;
-            is_charging = false;
+    if (ret != 0)
+        curr = 0;
+
+    /* ===== 3. 负载补偿：补偿大电流放电时的电压降 ===== */
+    int compensated_volt = fg_compensate_voltage(bq, volt, curr);
+    
+    /* ===== 4. 电压滤波：平滑电压变化 ===== */
+    filtered_volt = fg_filter_voltage(bq, compensated_volt);
+    
+    bq_dbg(PR_OEM, "raw=%d, comp=%d, filter=%d, curr=%d\n",
+           volt, compensated_volt, filtered_volt, curr);
+
+    /* ===== 5. 判断充电状态（带去抖动） ===== */
+    /* 注意：根据你的 fg_read_current 符号约定调整阈值 */
+    /* 如果充电时 curr 为负数，用 curr < -150 */
+    /* 如果充电时 curr 为正数，用 curr > 150 */
+    if (curr < -150) {
+        bq->charge_stable_count++;
+        if (bq->charge_stable_count >= 3) {
+            is_charging = true;
         } else {
-            /* 中间状态，保持之前的状态 */
             is_charging = bq->is_charging;
         }
-    } else {
+    } else if (curr > -50) {
+        bq->charge_stable_count = 0;
         is_charging = false;
+    } else {
+        is_charging = bq->is_charging;
     }
 
-    /* ===== 充电状态 ===== */
+    /* ===== 6. 充电状态：时间驱动 SOC 上升 ===== */
     if (is_charging) {
         ktime_t now = ktime_get();
         ktime_t elapsed;
@@ -938,19 +955,19 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         /* 首次进入充电状态，记录起点 */
         if (!bq->is_charging) {
             bq->charge_start_time = now;
-            /* 开始充电时，使用放电时的 SOC 作为起点 */
             bq->charge_start_soc = last_soc;
             bq->is_charging = true;
             bq->last_charge_report_soc = last_soc;
             bq->charge_stable_count = 0;
+            bq->charge_stop_soc = 0;  /* 清除过渡标记 */
             bq_dbg(PR_OEM, "CHARGING START: soc=%d, volt=%d, curr=%d\n",
-                   bq->charge_start_soc, volt, curr);
+                   bq->charge_start_soc, filtered_volt, curr);
         }
 
         elapsed = ktime_sub(now, bq->charge_start_time);
         elapsed_sec = (int)ktime_to_ms(elapsed) / 1000;
 
-        /* 充电速度：每 36 秒增加 1%（可根据需要调整） */
+        /* 充电速度：每 36 秒增加 1% */
         soc_increment = elapsed_sec / 36;
         soc = bq->charge_start_soc + soc_increment;
 
@@ -968,51 +985,77 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         if (soc >= bq->last_charge_report_soc + 5 ||
             soc <= bq->last_charge_report_soc - 5) {
             bq_dbg(PR_OEM, "CHARGING: elapsed=%ds, soc=%d%%, volt=%d, curr=%d\n",
-                   elapsed_sec, soc, volt, curr);
+                   elapsed_sec, soc, filtered_volt, curr);
             bq->last_charge_report_soc = soc;
         }
 
         last_soc = soc;
-        bq->batt_volt = volt;
+        bq->batt_volt = filtered_volt;
         bq->batt_curr = curr;
         return soc;
     }
 
-    /* ===== 放电/空闲状态：使用电压估算 ===== */
+    /* ===== 7. 放电/空闲状态 ===== */
     if (bq->is_charging) {
         bq_dbg(PR_OEM, "CHARGING STOPPED: final_soc=%d\n", last_soc);
         bq->is_charging = false;
         bq->charge_start_time = 0;
         bq->charge_stable_count = 0;
+        /* 记录充电停止时的 SOC 和时间，用于平滑过渡 */
+        bq->charge_stop_soc = last_soc;
+        bq->charge_stop_time = ktime_get();
     }
 
-    /* 放电时使用电压估算 SOC */
-    soc = fg_voltage_to_soc(volt);
+    /* 根据电压估算 SOC */
+    int volt_soc = fg_voltage_to_soc(filtered_volt);
 
-    /* 放电时平滑变化，防止跳变 */
-    if (soc > last_soc + 10) {
-        bq_dbg(PR_OEM, "DISCHARGE: soc jump %d->%d, using last\n", last_soc, soc);
-        soc = last_soc;
+    /* ===== 8. 充电停止后 60 秒内平滑过渡 ===== */
+    if (bq->charge_stop_soc > 0) {
+        ktime_t now = ktime_get();
+        ktime_t elapsed = ktime_sub(now, bq->charge_stop_time);
+        int elapsed_sec = (int)ktime_to_ms(elapsed) / 1000;
+        
+        if (elapsed_sec < 60) {
+            /* 线性插值：在 60 秒内从 charge_stop_soc 过渡到 volt_soc */
+            int progress = elapsed_sec * 100 / 60;
+            soc = bq->charge_stop_soc + (volt_soc - bq->charge_stop_soc) * progress / 100;
+            bq_dbg(PR_OEM, "TRANSITION: %ds/%d%%, soc=%d\n", elapsed_sec, progress, soc);
+        } else {
+            /* 过渡完成，清除标记 */
+            bq->charge_stop_soc = 0;
+            soc = volt_soc;
+        }
+    } else {
+        soc = volt_soc;
     }
 
+    /* ===== 9. 平滑变化，防止跳变 ===== */
+    /* 每次最多变化 3% */
     if (soc > last_soc + 3)
         soc = last_soc + 3;
     if (soc < last_soc - 3)
         soc = last_soc - 3;
 
-    if (soc >= last_soc + 5 || soc <= last_soc - 5) {
-        bq_dbg(PR_OEM, "DISCHARGE: volt=%d, soc=%d%%, curr=%d\n",
-               volt, soc, curr);
+    /* 异常跳变超过 10% 则丢弃 */
+    if (soc > last_soc + 10) {
+        bq_dbg(PR_OEM, "soc jump %d->%d, using last\n", last_soc, soc);
+        soc = last_soc;
     }
 
-    /* 共同保护 */
+    /* 记录日志 */
+    if (soc >= last_soc + 5 || soc <= last_soc - 5) {
+        bq_dbg(PR_OEM, "DISCHARGE: volt=%d, soc=%d%%, curr=%d\n",
+               filtered_volt, soc, curr);
+    }
+
+    /* ===== 10. 共同保护 ===== */
     if (soc < 5)
         soc = 5;
     if (soc > 100)
         soc = 100;
 
     last_soc = soc;
-    bq->batt_volt = volt;
+    bq->batt_volt = filtered_volt;
     bq->batt_curr = curr;
 
     return soc;
@@ -2104,6 +2147,53 @@ static int fg_get_raw_soc(struct bq_fg_chip *bq)
 	return raw_soc;
 }
 
+/* ===== 电压滤波：指数移动平均 ===== */
+static int fg_filter_voltage(struct bq_fg_chip *bq, int raw_volt)
+{
+    if (bq->filtered_volt == 0) {
+        bq->filtered_volt = raw_volt;
+        return raw_volt;
+    }
+    
+    /* alpha = 30% 权重给新采样，70% 给历史值 */
+    int alpha = 30;
+    int filtered = (bq->filtered_volt * (100 - alpha) + raw_volt * alpha) / 100;
+    
+    /* 限制单次变化幅度不超过 20mV */
+    int delta = filtered - bq->filtered_volt;
+    if (delta > 20)
+        filtered = bq->filtered_volt + 20;
+    else if (delta < -20)
+        filtered = bq->filtered_volt - 20;
+    
+    bq->filtered_volt = filtered;
+    return filtered;
+}
+/* ===== 滤波结束 ===== */
+/* ===== 负载补偿：补偿大电流放电时的 IR drop ===== */
+static int fg_compensate_voltage(struct bq_fg_chip *bq, int volt, int curr)
+{
+    int battery_resistance = 50;  /* 50mΩ，可根据实际电池调整 */
+    int compensated_volt;
+    
+    /* curr > 0 表示放电，电压会因内阻而下降 */
+    if (curr > 0) {
+        compensated_volt = volt + (curr * battery_resistance) / 1000;
+    } else {
+        /* 充电时不补偿 */
+        compensated_volt = volt;
+    }
+    
+    /* 限制范围 */
+    if (compensated_volt < volt)
+        compensated_volt = volt;
+    if (compensated_volt > 4450)
+        compensated_volt = 4450;
+    
+    return compensated_volt;
+}
+/* ===== 负载补偿结束 ===== */
+
 static int calc_delta_time(struct timeval *time_start, int *delta_time)
 {
 	struct timeval time_now;
@@ -2271,6 +2361,9 @@ bq->custom_charge_full = 0;
 bq->charge_full_override = false;
 bq->custom_charge_full_design = 0;
 bq->charge_full_design_override = false;
+bq->filtered_volt = 3700;
+bq->charge_stop_soc = 0;
+bq->charge_stop_time = 0;
 bq->charge_start_time = 0;
 bq->charge_start_soc = 50;
 bq->is_charging = false;
