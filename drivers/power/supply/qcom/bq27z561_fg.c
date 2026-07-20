@@ -29,6 +29,7 @@
 #include <linux/random.h>
 #include <linux/regmap.h>
 #include <linux/ktime.h>
+#include <linux/kernel.h>
 enum print_reason {
 	PR_INTERRUPT    = BIT(0),
 	PR_REGISTER     = BIT(1),
@@ -655,28 +656,40 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
 {
     static int last_soc;
     int soc, ret;
+    u16 real_volt = 0;
+    int fix_soc;
 
     if (bq->fake_soc > 0)
         return bq->fake_soc;
 
     ret = regmap_read(bq->regmap, bq->regs[BQ_FG_REG_SOC], &soc);
+    /* 实时读取当前电压，不使用过期缓存电压 */
+    fg_read_word(bq, bq->regs[BQ_FG_REG_VOLT], &real_volt);
+
     if (ret < 0) {
         bq_dbg(PR_OEM, "could not read RSOC, ret = %d\n", ret);
-        if (!last_soc)
-            last_soc = 80;
+        last_soc = clamp(last_soc, 20, 95);
         return last_soc;
     }
 
-    /* ===== 新增：如果 SOC 为 0 且电压正常，预设 50% ===== */
-    if (soc == 0 && bq->batt_volt > 3600) {
-        bq_dbg(PR_OEM, "SOC=0 but voltage normal, presetting to 80%%\n");
-        soc = 80;
+    /* SOC=0 但电压正常，按电压区间自适应修复，不写死80% */
+    if (soc == 0 && real_volt > 3600) {
+        if (real_volt >= 4200)
+            fix_soc = 90;
+        else if (real_volt >= 4000)
+            fix_soc = 80;
+        else if (real_volt >= 3800)
+            fix_soc = 60;
+        else
+            fix_soc = 40;
+        bq_dbg(PR_OEM, "SOC=0 but voltage normal %dmV, presetting to %d%%\n", real_volt, fix_soc);
+        soc = fix_soc;
     }
-    /* ===== 新增结束 ===== */
 
-    last_soc = soc;
+    last_soc = clamp(soc, 0, 100);
     return soc;
 }
+
 #define FG_REPORT_FULL_SOC	9800
 #define FG_OPTIMIZ_FULL_TIME	40
 static int fg_read_system_soc(struct bq_fg_chip *bq)
@@ -745,53 +758,58 @@ static int fg_read_fcc(struct bq_fg_chip *bq)
 {
     int ret;
     u16 fcc;
-
     if (bq->regs[BQ_FG_REG_FCC] == INVALID_REG_ADDR) {
         bq_dbg(PR_OEM, "FCC command not supported!\n");
         return 0;
     }
-
-    /* ===== 新增：如果启用了自定义容量，直接返回自定义值（mAh） ===== */
+    /* 自定义容量覆盖，动态适配任意容量 */
     if (bq->charge_full_override && bq->custom_charge_full > 0) {
-        return bq->custom_charge_full / 1000;  /* custom_charge_full 存储的是 µAh，转成 mAh */
+        return bq->custom_charge_full / 1000;  /* custom_charge_full 单位 µAh → mAh */
     }
-    /* ===== 新增结束 ===== */
-
     ret = fg_read_word(bq, bq->regs[BQ_FG_REG_FCC], &fcc);
     if (ret < 0)
         bq_dbg(PR_OEM, "could not read FCC, ret=%d\n", ret);
-
     return fcc;
 }
+
 static int fg_read_rm(struct bq_fg_chip *bq)
 {
     int ret;
     u16 rm;
+    int design_mah, cust_mah, max_cap;
 
     if (bq->regs[BQ_FG_REG_RM] == INVALID_REG_ADDR) {
         bq_dbg(PR_OEM, "RemainingCapacity command not supported!\n");
         return 0;
     }
-
     ret = fg_read_word(bq, bq->regs[BQ_FG_REG_RM], &rm);
     if (ret < 0) {
-        bq_dbg(PR_OEM, "could not read DC, ret=%d\n", ret);
-        return ret;
+        bq_dbg(PR_OEM, "could not read RM, ret=%d\n", ret);
+        return rm;
     }
 
-    /* ===== 按比例缩放 RM ===== */
+    /* 动态倍率缩放，兼容4500/5500/8000/16000任意容量 */
     if (bq->charge_full_override && bq->custom_charge_full > 0) {
-        int original_fcc = bq->batt_dc / 1000;  /* 从设备树读取，转成 mAh */
-        int new_fcc = bq->custom_charge_full / 1000;
-
-        if (original_fcc > 0) {
-            rm = rm * new_fcc / original_fcc;
+        design_mah = bq->batt_dc / 1000;
+        cust_mah = bq->custom_charge_full / 1000;
+        if (design_mah > 0 && cust_mah > 0) {
+            /* 先乘后除，保留小数精度，避免误差丢失 */
+            rm = rm * cust_mah / design_mah;
         }
     }
-    /* ===== 新增结束 ===== */
+
+    /* 容量上下限保护，杜绝0容量与超大溢出 */
+    design_mah = bq->batt_dc / 1000;
+    cust_mah = bq->custom_charge_full / 1000;
+    max_cap = bq->charge_full_override ? cust_mah : design_mah;
+    if (rm <= 0)
+        rm = max_cap / 10; /* 最低保留10%容量，不会直接掉到0 */
+    if (rm > max_cap)
+        rm = max_cap;
 
     return rm;
 }
+
 static int fg_read_soh(struct bq_fg_chip *bq)
 {
 	int ret;
@@ -1171,11 +1189,23 @@ static int fg_get_property(struct power_supply *psy, enum power_supply_property 
 		ret = fg_get_charge_counter(bq, &val->intval);
 		break;
 	case POWER_SUPPLY_PROP_TERMINATION_CURRENT:
-		val->intval = manu_info[TERMINATION].data;
-		break;
-	case POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT:
-		val->intval = manu_info[FFC_TERMINATION].data;
-		break;
+     val->intval = manu_info[TERMINATION].data;
+     if (bq->charge_full_override) {
+         int design_mah = bq->batt_dc / 1000;
+         int cust_mah = bq->custom_charge_full / 1000;
+         if (design_mah > 0)
+             val->intval = val->intval * cust_mah / design_mah;
+     }
+     break;
+ case POWER_SUPPLY_PROP_FFC_TERMINATION_CURRENT:
+     val->intval = manu_info[FFC_TERMINATION].data;
+     if (bq->charge_full_override) {
+         int design_mah = bq->batt_dc / 1000;
+         int cust_mah = bq->custom_charge_full / 1000;
+         if (design_mah > 0)
+             val->intval = val->intval * cust_mah / design_mah;
+     }
+     break;
 	case POWER_SUPPLY_PROP_RECHARGE_VBAT:
 			val->intval = 4350;
 		break;
@@ -1549,15 +1579,20 @@ static void fg_update_status(struct bq_fg_chip *bq)
 static int fg_get_raw_soc(struct bq_fg_chip *bq)
 {
     int rm, fcc;
-    int raw_soc;
+    int raw_soc = 8000; /* 默认80%兜底 */
 
-    rm = fg_read_rm(bq);      /* 已按比例缩放 */
-    fcc = fg_read_fcc(bq);    /* 已返回自定义值 */
+    rm = fg_read_rm(bq);
+    fcc = fg_read_fcc(bq);
+
+    /* 除数为0直接返回兜底值，防止内核除零Oops */
+    if (fcc <= 0)
+        return raw_soc;
 
     raw_soc = rm * 10000 / fcc;
-
-    return raw_soc;
+    /* 限制0~10000（0~100%） */
+    return clamp(raw_soc, 0, 10000);
 }
+
 static int calc_delta_time(struct timeval *time_start, int *delta_time)
 {
 	struct timeval time_now;
