@@ -668,7 +668,7 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     }
 
     /* ===== 新增：如果 SOC 为 0 且电压正常，预设 50% ===== */
-    if (soc == 0 && bq->batt_volt > 3700) {
+    if (soc == 0 && bq->batt_volt > 3600) {
         bq_dbg(PR_OEM, "SOC=0 but voltage normal, presetting to 80%%\n");
         soc = 80;
     }
@@ -677,7 +677,7 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     last_soc = soc;
     return soc;
 }
-#define FG_REPORT_FULL_SOC	9600
+#define FG_REPORT_FULL_SOC	9800
 #define FG_OPTIMIZ_FULL_TIME	40
 static int fg_read_system_soc(struct bq_fg_chip *bq)
 {
@@ -713,7 +713,7 @@ static int fg_read_volt(struct bq_fg_chip *bq)
 	ret = fg_read_word(bq, bq->regs[BQ_FG_REG_VOLT], &volt);
 	if (ret < 0) {
 		bq_dbg(PR_OEM, "could not read voltage, ret = %d\n", ret);
-		return 3700;
+		return 3850;
 	}
 	return volt;
 }
@@ -1032,7 +1032,7 @@ static int fg_get_property(struct power_supply *psy, enum power_supply_property 
 			break;
 		}
 		if (bq->old_hw) {
-			val->intval = 3700 * 1000;
+			val->intval = 3850 * 1000;
 			break;
 		}
 		ret = fg_read_volt(bq);
@@ -1053,7 +1053,7 @@ static int fg_get_property(struct power_supply *psy, enum power_supply_property 
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		if (bq->old_hw) {
-			val->intval = 50;
+			val->intval = 80;
 			break;
 		}
 		val->intval = fg_read_system_soc(bq);
@@ -1145,12 +1145,7 @@ static int fg_get_property(struct power_supply *psy, enum power_supply_property 
 		val->intval *= 1000;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
-		if (bq->old_hw) {
 			val->intval = 4400000;
-			break;
-		}
-		val->intval = fg_read_charging_voltage(bq);
-		val->intval *= 1000;
 		break;
 	case POWER_SUPPLY_PROP_AUTHENTIC:
 		val->intval = bq->verify_digest_success;
@@ -1182,10 +1177,7 @@ static int fg_get_property(struct power_supply *psy, enum power_supply_property 
 		val->intval = manu_info[FFC_TERMINATION].data;
 		break;
 	case POWER_SUPPLY_PROP_RECHARGE_VBAT:
-		if (bq->batt_recharge_vol > 0)
-			val->intval = bq->batt_recharge_vol;
-		else
-			val->intval = manu_info[RECHARGE_VOL].data;
+			val->intval = 4350;
 		break;
 	default:
 		return -EINVAL;
