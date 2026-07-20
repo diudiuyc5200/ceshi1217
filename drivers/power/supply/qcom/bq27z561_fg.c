@@ -658,13 +658,16 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     int soc, ret;
     u16 real_volt = 0;
     int fix_soc;
+    int batt_current;
+    static u32 soc_fix_log_cnt = 0;
 
     if (bq->fake_soc > 0)
         return bq->fake_soc;
 
     ret = regmap_read(bq->regmap, bq->regs[BQ_FG_REG_SOC], &soc);
-    /* 实时读取当前电压，不使用过期缓存电压 */
     fg_read_word(bq, bq->regs[BQ_FG_REG_VOLT], &real_volt);
+    // 读取当前电流，区分充放电
+    fg_read_current(bq, &batt_current);
 
     if (ret < 0) {
         bq_dbg(PR_OEM, "could not read RSOC, ret = %d\n", ret);
@@ -672,8 +675,8 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
         return last_soc;
     }
 
-    /* SOC=0 但电压正常，按电压区间自适应修复，不写死80% */
-    if (soc == 0 && real_volt > 3600) {
+    // 仅放电时才启用电压兜底；充电时放弃兜底，让BQ原生逻辑跑
+    if (soc == 0 && real_volt > 3600 && batt_current > 0) {
         if (real_volt >= 4200)
             fix_soc = 90;
         else if (real_volt >= 4000)
@@ -682,8 +685,12 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
             fix_soc = 60;
         else
             fix_soc = 40;
-        bq_dbg(PR_OEM, "SOC=0 but voltage normal %dmV, presetting to %d%%\n", real_volt, fix_soc);
+        if(++soc_fix_log_cnt % 20 == 0) {
+    bq_dbg(PR_OEM, "DISCHARGE SOC=0 volt %dmV, presetting to %d%%\n", real_volt, fix_soc);
+}
         soc = fix_soc;
+    } else if (soc == 0 && batt_current < 0) {
+        bq_dbg(PR_OEM, "CHARGE MODE RSOC=0, skip voltage fix, wait chip self-cal\n");
     }
 
     last_soc = clamp(soc, 0, 100);
