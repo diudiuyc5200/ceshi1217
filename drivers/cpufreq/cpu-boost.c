@@ -337,7 +337,7 @@ static int cpu_boost_init(void)
 		s->cpu = cpu;
 		// 新增：开机默认设置CPU4、CPU7 boost频率1401600
 		if (cpu == 4 || cpu == 7) {
-			s->input_boost_freq = 1401600;
+			s->input_boost_freq = 2001600;
 		} else {
 			s->input_boost_freq = 0; // 其余核心保持默认0
 		}
