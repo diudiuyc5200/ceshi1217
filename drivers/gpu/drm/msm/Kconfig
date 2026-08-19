@@ -210,3 +210,7 @@ config DRM_SDE_XLOG_DEBUG
 	bool "Trigger a panic after the dumping work has completed when SDE error"
 	default n
 	depends on DRM_MSM
+	
+config PANEL_DC_DIMMING
+	bool "Support for sde-crtc dc_dimming layer"
+	depends on DRM_MSM
