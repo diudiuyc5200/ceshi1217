@@ -5504,12 +5504,46 @@ static int sde_crtc_dc_atomic_check(struct sde_crtc *sde_crtc, struct sde_crtc_s
 		struct plane_state *pstates, int cnt)
 {
 	int i, max_stage = 0;
+	struct drm_connector *conn;
+	struct dsi_bridge *dbridge;
+	struct dsi_panel *panel = NULL;
 
+	/* 获取当前crtc对应的connector → dsi_bridge → dsi_panel */
+	for (i = 0; i < cstate->num_connectors; i++) {
+		conn = cstate->connectors[i];
+		if (!conn || !conn->encoder || !conn->encoder->bridge)
+			continue;
+
+		dbridge = to_dsi_bridge(conn->encoder->bridge);
+		if (dbridge && dbridge->display && dbridge->display->panel) {
+			panel = dbridge->display->panel;
+			break;
+		}
+	}
+
+	if (!panel) {
+		pr_err("%s: cannot find dsi_panel, disable dc dim layer\n", __func__);
+		cstate->num_dim_layers_bank = 0;
+		return 0;
+	}
+
+	/* ==========核心判断========== */
+	if (!panel->dc_dimming_enabled) {
+		pr_info("%s: dc_dimming disabled, skip dim layer\n", __func__);
+		cstate->num_dim_layers_bank = 0;
+		return 0;
+	}
+
+	/* dc开关开启，执行原有逻辑 */
 	for (i = 0; i < cnt; i++)
 		max_stage = (pstates[i].stage > max_stage) ? pstates[i].stage : max_stage;
 
 	if (++max_stage > 0)
 		_sde_crtc_config_dc_dim_layer(sde_crtc, cstate, &cstate->base, max_stage);
+
+	pr_info("%s: dc_dimming enabled, max_stage=%d num_dim_layers_bank=%d\n",
+			__func__, max_stage, cstate->num_dim_layers_bank);
+
 	return 0;
 }
 #endif

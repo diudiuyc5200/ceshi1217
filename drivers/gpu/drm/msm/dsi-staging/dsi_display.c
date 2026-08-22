@@ -19,6 +19,7 @@
 #include <linux/of.h>
 #include <linux/of_gpio.h>
 #include <linux/err.h>
+#include <drm/drm_crtc_helper.h>
 
 #include <linux/msm_drm_notify.h>
 
@@ -8139,6 +8140,7 @@ int dsi_display_set_dc_dimming(struct drm_connector *connector,
 	struct dsi_panel *panel = NULL;
 	struct dsi_display *display = NULL;
 	struct dsi_bridge *c_bridge = NULL;
+	int rc; // 新增返回值变量
 
 	if (!connector || !connector->encoder || !connector->encoder->bridge) {
 		pr_err("Invalid connector/encoder/bridge ptr\n");
@@ -8153,7 +8155,14 @@ int dsi_display_set_dc_dimming(struct drm_connector *connector,
 	}
 
 	panel = display->panel;
-	return dsi_panel_set_dc_dimming(panel, dc_dimming);
+	rc = dsi_panel_set_dc_dimming(panel, dc_dimming);
+	if (rc)
+		return rc;
+
+	/* 新增：触发DRM原子状态重校验，让sde_crtc_dc_atomic_check执行 */
+	drm_helper_hpd_irq_event(connector);
+
+	return 0;
 }
 
 ssize_t dsi_display_get_dc_dimming(struct drm_connector *connector, char *buf)
