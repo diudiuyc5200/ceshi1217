@@ -253,7 +253,7 @@ static int bq_voltage_to_soc(int volt_mv)
 		else					\
 			pr_debug(fmt, ##__VA_ARGS__);	\
 	} while (0)
-	static void smooth_transition(int target, int *current, int step);
+	static void smooth_transition(int target, int *p_cur, int step);
 static int is_target_stable(struct bq_fg_chip *bq, int target, int threshold_cnt);
 static int bq_battery_soc_smooth_tracking(struct bq_fg_chip *chip,
 		int raw_soc, int soc, int temp, int curr);
@@ -712,7 +712,6 @@ static int fg_read_rsoc(struct bq_fg_chip *bq)
     int soc_raw_reg;
     u16 real_volt = 0;
     int batt_current;
-    int scale = get_cap_scale(bq);
     int rm_scaled, fcc_scaled;
     int soc_coulomb, soc_volt, final_soc;
     static u32 soc_fix_log_cnt = 0;
@@ -851,8 +850,10 @@ static int fg_read_rm(struct bq_fg_chip *bq)
 {
     int ret;
     u16 rm_raw;
-    u32 scale = get_cap_scale(bq);
+    u32 scale;
+    int rm_scaled;
     int max_cap;
+
     if (bq->regs[BQ_FG_REG_RM] == INVALID_REG_ADDR) {
         bq_dbg(PR_OEM, "RemainingCapacity command not supported!\n");
         return 0;
@@ -862,8 +863,8 @@ static int fg_read_rm(struct bq_fg_chip *bq)
         bq_dbg(PR_OEM, "could not read RM, ret=%d\n", ret);
         rm_raw = 0;
     }
-    // 统一缩放
-    int rm_scaled = DIV_ROUND_CLOSEST(rm_raw * scale, 1000);
+    scale = get_cap_scale(bq);
+    rm_scaled = DIV_ROUND_CLOSEST(rm_raw * scale, 1000);
     max_cap = fg_read_fcc(bq);
     // 容量限幅保护
     if (rm_scaled <= 0)
@@ -1727,22 +1728,22 @@ struct ffc_smooth ffc_dischg_smooth[FFC_SMOOTH_LEN] = {
  * smooth_transition: 阶梯式向target靠近，每次最多step步
  * 移植自 battery‑simulator
  */
-static void smooth_transition(int target, int *current, int step)
+static void smooth_transition(int target, int *p_cur, int step)
 {
-	int diff = target - *current;
+	int diff = target - *p_cur;
 
 	if (diff > 0) {
 		if (diff > step)
-			*current += step;
+			*p_cur += step;
 		else
-			*current = target;
+			*p_cur = target;
 	} else if (diff < 0) {
 		if (-diff > step)
-			*current -= step;
+			*p_cur -= step;
 		else
-			*current = target;
+			*p_cur = target;
 	}
-	*current = clamp(*current, 0, 100);
+	*p_cur = clamp(*p_cur, 0, 100);
 }
 
 /**
@@ -1759,6 +1760,13 @@ static int is_target_stable(struct bq_fg_chip *bq, int target, int threshold_cnt
 	}
 	return bq->stable_target_cnt >= threshold_cnt;
 }
+/*
+ * SOC平滑防抖，移植自 battery‑simulator
+ * raw_soc: 库仑计原始10000单位raw soc
+ * batt_soc: fg_read_rsoc输出的加权后目标soc(0‑100)
+ * temp:电池温度
+ * batt_ma:电流，<0充电，>0放电
+ */
 /*
  * SOC平滑防抖，移植自 battery‑simulator
  * raw_soc: 库仑计原始10000单位raw soc
